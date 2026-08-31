@@ -1,0 +1,1 @@
+﻿{"min_line_width":0.06,"min_spacing":0.07,"copper_um":18,"min_mech_drill":0.12,"board_thickness":0.4,"min_laser_via":0.05,"solder_mask_bridge":0.09,"solder_mask_opening":0.2,"coverlay_spacing":0.4,"coverlay_to_pad":0.25,"coverlay_to_trace":0.1,"coverlay_window":[0.5,0.4],"test_pad_2wire":0.1}

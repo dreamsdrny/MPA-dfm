@@ -1,0 +1,147 @@
+{
+  "factory": "hongban",
+  "factory_label": "红版",
+  "board_type": "flex",
+  "board_type_label": "软板及软硬结合板",
+  "capability_level": "extreme",
+  "capability_label": "极限",
+  "copper_um": 18.0,
+  "copper_oz": 1.0,
+  "items": [
+    {
+      "category": "线路",
+      "item": "最小线宽",
+      "design": 0.06,
+      "capability": 0.05,
+      "unit": "mm",
+      "status": "warn_limit",
+      "message": "最小线宽: 设计 0.06mm 接近制程极限 0.05mm",
+      "note": "成品铜厚 18.0um"
+    },
+    {
+      "category": "线路",
+      "item": "最小线距",
+      "design": 0.07,
+      "capability": 0.055,
+      "unit": "mm",
+      "status": "pass",
+      "message": "最小线距: 设计 0.07mm 满足能力 0.055mm",
+      "note": "成品铜厚 18.0um"
+    },
+    {
+      "category": "钻孔",
+      "item": "最小机械钻孔",
+      "design": 0.12,
+      "capability": 0.1,
+      "unit": "mm",
+      "status": "warn_limit",
+      "message": "最小机械钻孔: 设计 0.12mm 接近制程极限 0.1mm",
+      "note": "软板"
+    },
+    {
+      "category": "钻孔",
+      "item": "最小激光孔",
+      "design": 0.05,
+      "capability": 0.04,
+      "unit": "mm",
+      "status": "pass",
+      "message": "最小激光孔: 设计 0.05mm 满足能力 0.04mm",
+      "note": ""
+    },
+    {
+      "category": "钻孔",
+      "item": "PTH纵横比",
+      "design": 3.33,
+      "capability": 5.0,
+      "unit": ":1",
+      "status": "pass",
+      "message": "纵横比 3.33:1 (板厚0.4mm/孔径0.12mm) 满足能力 5:1",
+      "note": ""
+    },
+    {
+      "category": "阻焊",
+      "item": "最小阻焊桥",
+      "design": 0.09,
+      "capability": null,
+      "unit": "mm",
+      "status": "info",
+      "message": "最小阻焊桥: 该等级无制程数据，需与板厂评估",
+      "note": "铜厚 1.0oz"
+    },
+    {
+      "category": "阻焊",
+      "item": "阻焊开窗最小尺寸",
+      "design": 0.2,
+      "capability": 0.15,
+      "unit": "mm",
+      "status": "pass",
+      "message": "阻焊开窗最小尺寸: 设计 0.2mm 满足能力 0.15mm",
+      "note": ""
+    },
+    {
+      "category": "覆盖膜",
+      "item": "覆盖膜开窗最小间距",
+      "design": 0.4,
+      "capability": 0.3,
+      "unit": "mm",
+      "status": "pass",
+      "message": "覆盖膜开窗最小间距: 设计 0.4mm 满足能力 0.3mm",
+      "note": ""
+    },
+    {
+      "category": "覆盖膜",
+      "item": "开窗边缘到焊盘距离",
+      "design": 0.25,
+      "capability": null,
+      "unit": "mm",
+      "status": "info",
+      "message": "开窗边缘到焊盘距离: 该等级无制程数据，需与板厂评估",
+      "note": ""
+    },
+    {
+      "category": "覆盖膜",
+      "item": "开窗边缘到线路距离",
+      "design": 0.1,
+      "capability": null,
+      "unit": "mm",
+      "status": "info",
+      "message": "开窗边缘到线路距离: 该等级无制程数据，需与板厂评估",
+      "note": ""
+    },
+    {
+      "category": "覆盖膜",
+      "item": "覆盖膜最小开窗",
+      "design": "0.5x0.4",
+      "capability": "0.5x0.5",
+      "unit": "mm",
+      "status": "fail",
+      "message": "开窗 0.5x0.4mm 小于最小开窗 0.5x0.5mm",
+      "note": "模具供应商极限能力"
+    },
+    {
+      "category": "测试",
+      "item": "电测PAD(二线)",
+      "design": 0.1,
+      "capability": 0.05,
+      "unit": "mm",
+      "status": "pass",
+      "message": "电测PAD(二线): 设计 0.1mm 满足能力 0.05mm",
+      "note": ""
+    }
+  ],
+  "errors": [
+    "开窗 0.5x0.4mm 小于最小开窗 0.5x0.5mm"
+  ],
+  "warnings": [
+    "最小线宽: 设计 0.06mm 接近制程极限 0.05mm",
+    "最小机械钻孔: 设计 0.12mm 接近制程极限 0.1mm"
+  ],
+  "info": [
+    "最小阻焊桥: 该等级无制程数据，需与板厂评估",
+    "开窗边缘到焊盘距离: 该等级无制程数据，需与板厂评估",
+    "开窗边缘到线路距离: 该等级无制程数据，需与板厂评估"
+  ],
+  "error_count": 1,
+  "warning_count": 2,
+  "passed": false
+}

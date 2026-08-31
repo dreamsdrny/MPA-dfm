@@ -1,0 +1,1215 @@
+{
+  "board_info": {
+    "board_name": "860-000776_PSE_Board",
+    "file_path": "(demo)",
+    "file_size_mb": 0,
+    "net_count": 82,
+    "layers": [
+      {
+        "name": "TOP",
+        "type": "signal"
+      },
+      {
+        "name": "L2_GND",
+        "type": "plane"
+      },
+      {
+        "name": "L3_SIG",
+        "type": "signal"
+      },
+      {
+        "name": "L4_GND",
+        "type": "plane"
+      },
+      {
+        "name": "L5_PWR",
+        "type": "plane"
+      },
+      {
+        "name": "L6_SIG",
+        "type": "signal"
+      },
+      {
+        "name": "L7_GND",
+        "type": "plane"
+      },
+      {
+        "name": "BOTTOM",
+        "type": "signal"
+      }
+    ],
+    "layer_count": 8,
+    "power_nets": [
+      "24V",
+      "24V_BEAD",
+      "24V_CMC",
+      "24V_MB",
+      "3V3_MB",
+      "3V3_PSE",
+      "GND",
+      "GND_BEAD",
+      "GND_CMC",
+      "GND_MB",
+      "AGND",
+      "GND1",
+      "GND2"
+    ],
+    "diff_pairs": []
+  },
+  "classification": {
+    "net_classes": {
+      "POWER": {
+        "nets": [
+          "24V",
+          "24V_BEAD",
+          "24V_CMC",
+          "24V_MB",
+          "3V3_MB",
+          "3V3_PSE",
+          "VBUS",
+          "VBUS_DET"
+        ],
+        "count": 8,
+        "protocol": null,
+        "is_diff_pair": false,
+        "is_power": true,
+        "is_gnd": false,
+        "width_rule": "POWER",
+        "spacing_rule": "POWER",
+        "impedance_target": null,
+        "match_tolerance": null
+      },
+      "GND": {
+        "nets": [
+          "GND",
+          "GND_BEAD",
+          "GND_CMC",
+          "GND_MB",
+          "AGND",
+          "GND1",
+          "GND2"
+        ],
+        "count": 7,
+        "protocol": null,
+        "is_diff_pair": false,
+        "is_power": false,
+        "is_gnd": true,
+        "width_rule": "GND",
+        "spacing_rule": "GND",
+        "impedance_target": null,
+        "match_tolerance": null
+      },
+      "GATE_DRIVE": {
+        "nets": [
+          "CH1_GATE",
+          "CH2_GATE",
+          "CH3_GATE",
+          "CH4_GATE",
+          "CH5_GATE",
+          "CH6_GATE",
+          "CH7_GATE",
+          "CH8_GATE"
+        ],
+        "count": 8,
+        "protocol": null,
+        "is_diff_pair": false,
+        "is_power": false,
+        "is_gnd": false,
+        "width_rule": "GATE_DRIVE",
+        "spacing_rule": "GATE_DRIVE",
+        "impedance_target": null,
+        "match_tolerance": null
+      },
+      "SENSE": {
+        "nets": [
+          "CH1_SEN",
+          "CH2_SEN",
+          "CH3_SEN",
+          "CH4_SEN",
+          "CH5_SEN",
+          "CH6_SEN",
+          "CH7_SEN",
+          "CH8_SEN"
+        ],
+        "count": 8,
+        "protocol": null,
+        "is_diff_pair": false,
+        "is_power": false,
+        "is_gnd": false,
+        "width_rule": "SENSE",
+        "spacing_rule": "SENSE",
+        "impedance_target": null,
+        "match_tolerance": null
+      },
+      "CLOCK": {
+        "nets": [
+          "CLK_25MHZ",
+          "CLK_25MHZ_N"
+        ],
+        "count": 2,
+        "protocol": "CLOCK",
+        "is_diff_pair": false,
+        "is_power": false,
+        "is_gnd": false,
+        "width_rule": "CLOCK",
+        "spacing_rule": "CLOCK_3W",
+        "impedance_target": null,
+        "match_tolerance": null
+      },
+      "RESET": {
+        "nets": [
+          "RESET_N",
+          "POR_B",
+          "SPI_CS_N"
+        ],
+        "count": 3,
+        "protocol": null,
+        "is_diff_pair": false,
+        "is_power": false,
+        "is_gnd": false,
+        "width_rule": "RESET",
+        "spacing_rule": "RESET_5W",
+        "impedance_target": null,
+        "match_tolerance": null
+      },
+      "SPI": {
+        "nets": [
+          "SPI_MISO",
+          "SPI_MOSI",
+          "SPI_SCLK"
+        ],
+        "count": 3,
+        "protocol": "SPI",
+        "is_diff_pair": false,
+        "is_power": false,
+        "is_gnd": false,
+        "width_rule": "SPI",
+        "spacing_rule": "SPI_3W",
+        "impedance_target": null,
+        "match_tolerance": null
+      },
+      "I2C": {
+        "nets": [
+          "I2C_SDA",
+          "I2C_SCL"
+        ],
+        "count": 2,
+        "protocol": "I2C",
+        "is_diff_pair": false,
+        "is_power": false,
+        "is_gnd": false,
+        "width_rule": "I2C",
+        "spacing_rule": "default",
+        "impedance_target": null,
+        "match_tolerance": null
+      },
+      "ETHERNET": {
+        "nets": [
+          "ETH_MDI0_P",
+          "ETH_MDI0_N",
+          "ETH_MDI1_P",
+          "ETH_MDI1_N",
+          "ETH_MDI2_P",
+          "ETH_MDI2_N",
+          "ETH_MDI3_P",
+          "ETH_MDI3_N",
+          "ETH_RGMII_TX0",
+          "ETH_RGMII_TX1",
+          "ETH_RGMII_TX2",
+          "ETH_RGMII_TX3",
+          "ETH_RGMII_RX0",
+          "ETH_RGMII_RX1",
+          "ETH_RGMII_RX2",
+          "ETH_RGMII_RX3",
+          "ETH_RGMII_TXC",
+          "ETH_RGMII_RXC",
+          "ETH_RGMII_TX_CTL",
+          "ETH_RGMII_RX_CTL",
+          "UART_TX",
+          "UART_RX"
+        ],
+        "count": 22,
+        "protocol": "ETHERNET",
+        "is_diff_pair": true,
+        "is_power": false,
+        "is_gnd": false,
+        "width_rule": "ETHERNET",
+        "spacing_rule": "ETHERNET",
+        "impedance_target": 100.0,
+        "match_tolerance": "0.5mm"
+      },
+      "LED": {
+        "nets": [
+          "LED_STATUS",
+          "LED_FAULT"
+        ],
+        "count": 2,
+        "protocol": null,
+        "is_diff_pair": false,
+        "is_power": false,
+        "is_gnd": false,
+        "width_rule": "default",
+        "spacing_rule": "default",
+        "impedance_target": null,
+        "match_tolerance": null
+      },
+      "JTAG": {
+        "nets": [
+          "JTAG_TMS",
+          "JTAG_TCK",
+          "JTAG_TDI",
+          "JTAG_TDO",
+          "JTAG_TRST"
+        ],
+        "count": 5,
+        "protocol": "JTAG",
+        "is_diff_pair": false,
+        "is_power": false,
+        "is_gnd": false,
+        "width_rule": "default",
+        "spacing_rule": "default",
+        "impedance_target": null,
+        "match_tolerance": null
+      },
+      "DEFAULT": {
+        "nets": [
+          "SW1",
+          "SW2",
+          "SW3",
+          "SW4",
+          "TP1",
+          "TP2",
+          "TP3",
+          "TP4",
+          "TP5",
+          "TP6"
+        ],
+        "count": 10,
+        "protocol": null,
+        "is_diff_pair": false,
+        "is_power": false,
+        "is_gnd": false,
+        "width_rule": "default",
+        "spacing_rule": "default",
+        "impedance_target": null,
+        "match_tolerance": null
+      },
+      "CAN": {
+        "nets": [
+          "CANH",
+          "CANL"
+        ],
+        "count": 2,
+        "protocol": "CAN",
+        "is_diff_pair": true,
+        "is_power": false,
+        "is_gnd": false,
+        "width_rule": "CAN",
+        "spacing_rule": "CAN",
+        "impedance_target": 120.0,
+        "match_tolerance": "0.5mm"
+      }
+    },
+    "diff_pairs": [
+      {
+        "p_net": "ETH_MDI0_P",
+        "n_net": "ETH_MDI0_N"
+      },
+      {
+        "p_net": "ETH_MDI1_P",
+        "n_net": "ETH_MDI1_N"
+      },
+      {
+        "p_net": "ETH_MDI2_P",
+        "n_net": "ETH_MDI2_N"
+      },
+      {
+        "p_net": "ETH_MDI3_P",
+        "n_net": "ETH_MDI3_N"
+      }
+    ],
+    "summary": {
+      "POWER": 8,
+      "GND": 7,
+      "GATE_DRIVE": 8,
+      "SENSE": 8,
+      "CLOCK": 2,
+      "RESET": 3,
+      "SPI": 3,
+      "I2C": 2,
+      "ETHERNET": 22,
+      "LED": 2,
+      "JTAG": 5,
+      "DEFAULT": 10,
+      "CAN": 2
+    },
+    "total_nets": 82,
+    "total_classes": 13,
+    "total_diff_pairs": 4
+  },
+  "constraints": {
+    "physical": [
+      {
+        "name": "PHYS_POWER",
+        "net_class": "POWER",
+        "width_min": 0.3,
+        "width_preferred": 0.5,
+        "width_max": 2.0,
+        "unit": "mm"
+      },
+      {
+        "name": "PHYS_GND",
+        "net_class": "GND",
+        "width_min": 0.3,
+        "width_preferred": 0.5,
+        "width_max": 2.0,
+        "unit": "mm"
+      },
+      {
+        "name": "PHYS_GATE_DRIVE",
+        "net_class": "GATE_DRIVE",
+        "width_min": 0.3,
+        "width_preferred": 0.5,
+        "width_max": 1.0,
+        "unit": "mm"
+      },
+      {
+        "name": "PHYS_SENSE",
+        "net_class": "SENSE",
+        "width_min": 0.1,
+        "width_preferred": 0.15,
+        "width_max": 0.2,
+        "unit": "mm"
+      },
+      {
+        "name": "PHYS_CLOCK",
+        "net_class": "CLOCK",
+        "width_min": 0.1,
+        "width_preferred": 0.15,
+        "width_max": 0.2,
+        "unit": "mm"
+      },
+      {
+        "name": "PHYS_RESET",
+        "net_class": "RESET",
+        "width_min": 0.1,
+        "width_preferred": 0.15,
+        "width_max": 0.2,
+        "unit": "mm"
+      },
+      {
+        "name": "PHYS_SPI",
+        "net_class": "SPI",
+        "width_min": 0.1,
+        "width_preferred": 0.15,
+        "width_max": 0.2,
+        "unit": "mm"
+      },
+      {
+        "name": "PHYS_I2C",
+        "net_class": "I2C",
+        "width_min": 0.1,
+        "width_preferred": 0.15,
+        "width_max": 0.2,
+        "unit": "mm"
+      },
+      {
+        "name": "PHYS_ETHERNET",
+        "net_class": "ETHERNET",
+        "width_min": 0.09,
+        "width_preferred": 0.1,
+        "width_max": 0.12,
+        "unit": "mm"
+      },
+      {
+        "name": "PHYS_LED",
+        "net_class": "LED",
+        "width_min": 0.1,
+        "width_preferred": 0.15,
+        "width_max": 0.2,
+        "unit": "mm"
+      },
+      {
+        "name": "PHYS_JTAG",
+        "net_class": "JTAG",
+        "width_min": 0.1,
+        "width_preferred": 0.15,
+        "width_max": 0.2,
+        "unit": "mm"
+      },
+      {
+        "name": "PHYS_DEFAULT",
+        "net_class": "DEFAULT",
+        "width_min": 0.1,
+        "width_preferred": 0.15,
+        "width_max": 0.2,
+        "unit": "mm"
+      },
+      {
+        "name": "PHYS_CAN",
+        "net_class": "CAN",
+        "width_min": 0.1,
+        "width_preferred": 0.15,
+        "width_max": 0.2,
+        "unit": "mm"
+      }
+    ],
+    "spacing": [
+      {
+        "name": "SPC_POWER",
+        "net_class": "POWER",
+        "line_to_line": 0.3,
+        "line_to_pin": 0.3,
+        "line_to_via": 0.25,
+        "unit": "mm"
+      },
+      {
+        "name": "SPC_GND",
+        "net_class": "GND",
+        "line_to_line": 0.3,
+        "line_to_pin": 0.3,
+        "line_to_via": 0.25,
+        "unit": "mm"
+      },
+      {
+        "name": "SPC_GATE_DRIVE",
+        "net_class": "GATE_DRIVE",
+        "line_to_line": 0.5,
+        "line_to_pin": 0.5,
+        "line_to_via": 0.5,
+        "unit": "mm"
+      },
+      {
+        "name": "SPC_SENSE",
+        "net_class": "SENSE",
+        "line_to_line": 0.2,
+        "line_to_pin": 0.15,
+        "line_to_via": 0.15,
+        "unit": "mm"
+      },
+      {
+        "name": "SPC_CLOCK",
+        "net_class": "CLOCK",
+        "line_to_line": "3W",
+        "line_to_pin": 0.3,
+        "line_to_via": 0.25,
+        "unit": "mm"
+      },
+      {
+        "name": "SPC_RESET",
+        "net_class": "RESET",
+        "line_to_line": "5W",
+        "line_to_pin": 0.3,
+        "line_to_via": 0.25,
+        "unit": "mm"
+      },
+      {
+        "name": "SPC_SPI",
+        "net_class": "SPI",
+        "line_to_line": "3W",
+        "line_to_pin": 0.15,
+        "line_to_via": 0.15,
+        "unit": "mm"
+      },
+      {
+        "name": "SPC_I2C",
+        "net_class": "I2C",
+        "line_to_line": 0.15,
+        "line_to_pin": 0.15,
+        "line_to_via": 0.15,
+        "unit": "mm"
+      },
+      {
+        "name": "SPC_ETHERNET",
+        "net_class": "ETHERNET",
+        "line_to_line": 0.2,
+        "line_to_pin": 0.2,
+        "line_to_via": 0.2,
+        "unit": "mm"
+      },
+      {
+        "name": "SPC_LED",
+        "net_class": "LED",
+        "line_to_line": 0.15,
+        "line_to_pin": 0.15,
+        "line_to_via": 0.15,
+        "unit": "mm"
+      },
+      {
+        "name": "SPC_JTAG",
+        "net_class": "JTAG",
+        "line_to_line": 0.15,
+        "line_to_pin": 0.15,
+        "line_to_via": 0.15,
+        "unit": "mm"
+      },
+      {
+        "name": "SPC_DEFAULT",
+        "net_class": "DEFAULT",
+        "line_to_line": 0.15,
+        "line_to_pin": 0.15,
+        "line_to_via": 0.15,
+        "unit": "mm"
+      },
+      {
+        "name": "SPC_CAN",
+        "net_class": "CAN",
+        "line_to_line": 0.2,
+        "line_to_pin": 0.2,
+        "line_to_via": 0.2,
+        "unit": "mm"
+      }
+    ],
+    "electrical": [
+      {
+        "name": "ELEC_ETHERNET",
+        "net_class": "ETHERNET",
+        "protocol": "ETHERNET",
+        "is_diff_pair": true,
+        "min_line_width": 0.09,
+        "pref_line_width": 0.1,
+        "max_line_width": 0.12,
+        "min_gap": 0.09,
+        "pref_gap": 0.1,
+        "max_gap": 0.15,
+        "impedance_target": 100,
+        "impedance_tolerance": 10,
+        "unit": "mm"
+      },
+      {
+        "name": "ELEC_CAN",
+        "net_class": "CAN",
+        "protocol": "CAN",
+        "is_diff_pair": true,
+        "min_line_width": 0.1,
+        "pref_line_width": 0.15,
+        "max_line_width": 0.2,
+        "min_gap": 0.1,
+        "pref_gap": 0.15,
+        "max_gap": 0.2,
+        "impedance_target": 100,
+        "impedance_tolerance": 10,
+        "unit": "mm"
+      }
+    ],
+    "via": [
+      {
+        "name": "VIA_POWER",
+        "net_class": "POWER",
+        "pad": 0.5,
+        "drill": 0.25,
+        "unit": "mm"
+      },
+      {
+        "name": "VIA_GND",
+        "net_class": "GND",
+        "pad": 0.5,
+        "drill": 0.25,
+        "unit": "mm"
+      },
+      {
+        "name": "VIA_GATE_DRIVE",
+        "net_class": "GATE_DRIVE",
+        "pad": 0.6,
+        "drill": 0.3,
+        "unit": "mm"
+      },
+      {
+        "name": "VIA_SENSE",
+        "net_class": "SENSE",
+        "pad": 0.4,
+        "drill": 0.2,
+        "unit": "mm"
+      },
+      {
+        "name": "VIA_CLOCK",
+        "net_class": "CLOCK",
+        "pad": 0.4,
+        "drill": 0.2,
+        "unit": "mm"
+      },
+      {
+        "name": "VIA_RESET",
+        "net_class": "RESET",
+        "pad": 0.4,
+        "drill": 0.2,
+        "unit": "mm"
+      },
+      {
+        "name": "VIA_SPI",
+        "net_class": "SPI",
+        "pad": 0.4,
+        "drill": 0.2,
+        "unit": "mm"
+      },
+      {
+        "name": "VIA_I2C",
+        "net_class": "I2C",
+        "pad": 0.4,
+        "drill": 0.2,
+        "unit": "mm"
+      },
+      {
+        "name": "VIA_ETHERNET",
+        "net_class": "ETHERNET",
+        "pad": 0.4,
+        "drill": 0.2,
+        "unit": "mm"
+      },
+      {
+        "name": "VIA_LED",
+        "net_class": "LED",
+        "pad": 0.4,
+        "drill": 0.2,
+        "unit": "mm"
+      },
+      {
+        "name": "VIA_JTAG",
+        "net_class": "JTAG",
+        "pad": 0.4,
+        "drill": 0.2,
+        "unit": "mm"
+      },
+      {
+        "name": "VIA_DEFAULT",
+        "net_class": "DEFAULT",
+        "pad": 0.4,
+        "drill": 0.2,
+        "unit": "mm"
+      },
+      {
+        "name": "VIA_CAN",
+        "net_class": "CAN",
+        "pad": 0.4,
+        "drill": 0.2,
+        "unit": "mm"
+      }
+    ]
+  },
+  "dfm": {
+    "factory": "sihui",
+    "factory_label": "四会",
+    "board_type": "rigid",
+    "board_type_label": "硬板",
+    "capability_level": "extreme",
+    "capability_label": "极限",
+    "capability": {
+      "panel": {
+        "max_working_panel": {
+          "value": [
+            1220,
+            720
+          ],
+          "unit": "mm",
+          "note": "针对通孔板，HDI需评估"
+        },
+        "max_array": {
+          "value": [
+            500,
+            500
+          ],
+          "unit": "mm"
+        },
+        "min_pcs": {
+          "value": [
+            10,
+            10
+          ],
+          "unit": "mm"
+        },
+        "min_breakaway_rail": {
+          "value": 3.5,
+          "unit": "mm"
+        }
+      },
+      "stackup": {
+        "core_min": {
+          "value": 0.05,
+          "unit": "mm"
+        },
+        "pp_options": [
+          "1027",
+          "1017",
+          "106",
+          "1080",
+          "2116"
+        ],
+        "impedance_match_tol": {
+          "value": 0.075
+        },
+        "copper_standard": {
+          "value": "IPC 3级"
+        }
+      },
+      "hole_copper": {
+        "class1": {
+          "value": 18,
+          "unit": "um"
+        },
+        "class2": {
+          "value": 20,
+          "unit": "um"
+        },
+        "class3": {
+          "value": 25,
+          "unit": "um"
+        }
+      },
+      "trace": {
+        "min_line_spacing_by_copper": [
+          {
+            "copper_max_um": 25,
+            "line_um": 40,
+            "space_um": 40
+          },
+          {
+            "copper_min_um": 25,
+            "copper_max_um": 35,
+            "line_um": 50,
+            "space_um": 50
+          },
+          {
+            "copper_min_um": 35,
+            "copper_max_um": 52,
+            "line_um": 70,
+            "space_um": 70
+          },
+          {
+            "copper_min_um": 52,
+            "copper_max_um": 70,
+            "line_um": 85,
+            "space_um": 85
+          },
+          {
+            "copper_min_um": 70,
+            "copper_max_um": 87,
+            "line_um": 110,
+            "space_um": 110
+          },
+          {
+            "copper_min_um": 87,
+            "copper_max_um": 105,
+            "line_um": 140,
+            "space_um": 140
+          }
+        ],
+        "line_width_tolerance": [
+          {
+            "width_min_um": 50,
+            "width_max_um": 75,
+            "tol_um": 25
+          },
+          {
+            "width_min_um": 75,
+            "width_max_um": 100,
+            "tol_pct": 20
+          },
+          {
+            "width_min_um": 100,
+            "width_max_um": 150,
+            "tol_pct": 20
+          },
+          {
+            "width_min_um": 150,
+            "tol_um": 50
+          }
+        ],
+        "hole_to_hole_spacing": {
+          "pth_to_pth": {
+            "value": 0.4,
+            "unit": "mm"
+          },
+          "pth_to_blind": {
+            "value": 0.25,
+            "unit": "mm"
+          },
+          "blind_to_blind": {
+            "value": 0.225,
+            "unit": "mm"
+          }
+        },
+        "trace_to_board_edge": {
+          "inner": 0.2,
+          "outer": 0.2,
+          "unit": "mm"
+        },
+        "smt_pad_position_tol": [
+          {
+            "pad_max_um": 200,
+            "pad_shape": "round",
+            "copper_max_um": 44,
+            "tol_um": 95
+          },
+          {
+            "pad_max_um": 200,
+            "pad_shape": "round",
+            "copper_min_um": 44,
+            "copper_max_um": 55,
+            "tol_um": 130
+          },
+          {
+            "pad_max_um": 200,
+            "pad_shape": "round",
+            "copper_min_um": 55,
+            "tol_um": 150,
+            "note": "原表＞150um"
+          },
+          {
+            "pad_max_um": 200,
+            "pad_shape": "rect",
+            "copper_max_um": 44,
+            "tol_um": 85
+          },
+          {
+            "pad_max_um": 200,
+            "pad_shape": "rect",
+            "copper_min_um": 44,
+            "copper_max_um": 55,
+            "tol_um": 120
+          },
+          {
+            "pad_max_um": 200,
+            "pad_shape": "rect",
+            "copper_min_um": 55,
+            "tol_um": 140,
+            "note": "原表＞140um"
+          },
+          {
+            "pad_min_um": 200,
+            "pad_shape": "round",
+            "copper_max_um": 44,
+            "tol_um": 95
+          },
+          {
+            "pad_min_um": 200,
+            "pad_shape": "round",
+            "copper_min_um": 44,
+            "copper_max_um": 55,
+            "tol_um": 130
+          },
+          {
+            "pad_min_um": 200,
+            "pad_shape": "round",
+            "copper_min_um": 55,
+            "tol_um": 150,
+            "note": "原表＞150um"
+          },
+          {
+            "pad_min_um": 200,
+            "pad_shape": "rect",
+            "copper_max_um": 44,
+            "tol_um": 85
+          },
+          {
+            "pad_min_um": 200,
+            "pad_shape": "rect",
+            "copper_min_um": 44,
+            "copper_max_um": 55,
+            "tol_um": 120
+          },
+          {
+            "pad_min_um": 200,
+            "pad_shape": "rect",
+            "copper_min_um": 55,
+            "tol_um": 140,
+            "note": "原表＞140um"
+          }
+        ],
+        "aoi_min_detect": {
+          "value": 1.37,
+          "unit": "mil"
+        }
+      },
+      "lamination": {
+        "dielectric_thickness_tol": {
+          "value": "0.08"
+        },
+        "layer_registration": {
+          "value": 0.1,
+          "unit": "mm"
+        },
+        "press_squeeze": {
+          "value": 300,
+          "unit": "um"
+        },
+        "board_thickness": {
+          "min_mm": 0.4,
+          "max_mm": 6.5
+        }
+      },
+      "impedance": {
+        "tolerance_ge_50ohm": {
+          "value": 0.1
+        },
+        "tolerance_lt_50ohm": {
+          "value": 5,
+          "unit": "ohm"
+        }
+      },
+      "drill": {
+        "min_mech_drill": {
+          "value": 0.15,
+          "unit": "mm"
+        },
+        "max_mech_drill": {
+          "value": 6,
+          "unit": "mm"
+        },
+        "laser_registration": {
+          "value": 15,
+          "unit": "um"
+        },
+        "min_laser_via": {
+          "value": 75,
+          "unit": "um"
+        },
+        "min_laser_blind": {
+          "value": 65,
+          "unit": "um"
+        },
+        "laser_dielectric_limit": [
+          {
+            "hole_um": null,
+            "dielectric_range_um": [
+              50,
+              100
+            ]
+          }
+        ],
+        "annular_ring_mech": {
+          "value": 0.1,
+          "unit": "mm"
+        },
+        "annular_ring_laser": {
+          "value": 0.05,
+          "unit": "mm"
+        },
+        "pth_drill_tol": {
+          "round_mm": 0.05
+        },
+        "npth_drill_tol": {
+          "round_mm": 0.025
+        },
+        "hole_wall_roughness": {
+          "value": 20,
+          "unit": "um"
+        },
+        "hole_position_tol": [
+          {
+            "tol_mm": 0.05
+          }
+        ],
+        "npth_to_edge": {
+          "value": 0.2,
+          "unit": "mm"
+        },
+        "via_drill_tol": {
+          "value": 0.05,
+          "unit": "mm"
+        }
+      },
+      "plating": {
+        "blind_via_fill_aspect": {
+          "value": 1.0,
+          "unit": "ratio"
+        },
+        "blind_via_fill_rate": {
+          "value": 1,
+          "unit": "ratio",
+          "note": "原表值为1(满填)"
+        },
+        "blind_via_fill_dimple": {
+          "value": 15,
+          "unit": "um"
+        },
+        "plating_uniformity": {
+          "value": 5,
+          "unit": "um"
+        },
+        "pth_aspect_ratio": {
+          "value": 1,
+          "unit": "ratio",
+          "note": "原表1:1，数据存疑请与板厂确认"
+        },
+        "dimple_bump_inner": {
+          "value": 15,
+          "unit": "um"
+        },
+        "dimple_bump_outer": {
+          "value": 15,
+          "unit": "um"
+        }
+      },
+      "plug_hole": {
+        "ink_types": [
+          "PSR 2000 CD11B",
+          "R-500BL",
+          "R-500F12",
+          "R-500 F41",
+          "PSR-4000PF10W"
+        ],
+        "soldermask_plug_min": {
+          "board_thickness_mm": 0.4,
+          "hole_mm": 0.2
+        },
+        "resin_plug_min": {
+          "board_thickness_mm": null,
+          "hole_mm": null,
+          "note": "原表未提供"
+        },
+        "ink_plug_depth": {
+          "value": 70,
+          "unit": "percent"
+        },
+        "resin_plug_depth": {
+          "value": 1,
+          "unit": "ratio"
+        },
+        "resin_plug_cap_copper": {
+          "value": 5,
+          "unit": "um"
+        },
+        "plug_colors": [
+          "绿色",
+          "黑色",
+          "黄色",
+          "白色",
+          "蓝色"
+        ],
+        "plug_aspect_ratio": {
+          "value": 10,
+          "unit": "ratio"
+        },
+        "plug_alignment": {
+          "value": 2,
+          "unit": "mil"
+        }
+      },
+      "solder_mask": {
+        "ink_thickness": {
+          "value": 20,
+          "unit": "um"
+        },
+        "min_bridge_single": {
+          "value": 80,
+          "unit": "um"
+        },
+        "min_opening": {
+          "value": 0.025,
+          "unit": "mm"
+        },
+        "opening_tolerance": {
+          "value": 10,
+          "unit": "um"
+        }
+      },
+      "silkscreen": {
+        "min_line_width": {
+          "value": 3,
+          "unit": "mil"
+        },
+        "min_clearance": {
+          "value": 3,
+          "unit": "mil"
+        },
+        "min_to_solder_mask": {
+          "value": 3,
+          "unit": "mil"
+        },
+        "min_char_size": {
+          "width_mil": 19.69,
+          "height_mil": 16.51
+        },
+        "min_to_outline": {
+          "value": 4,
+          "unit": "mil"
+        },
+        "ink_max_thickness": {
+          "value": 1,
+          "unit": "mil"
+        },
+        "ink_min_thickness": {
+          "value": 0.39,
+          "unit": "mil"
+        }
+      },
+      "surface_finish": {
+        "ENIG": {
+          "gold_um": [
+            0.025,
+            0.1
+          ],
+          "nickel_um": [
+            3,
+            8
+          ]
+        },
+        "hard_gold": {
+          "gold_um": [
+            0.076,
+            3.5
+          ],
+          "nickel_um": [
+            3,
+            null
+          ]
+        },
+        "ENEPIG": {
+          "gold_um": [
+            0.03,
+            0.1
+          ],
+          "palladium_um": [
+            0.05,
+            0.3
+          ],
+          "nickel_um": [
+            3,
+            8
+          ]
+        },
+        "OSP": {
+          "film_um": [
+            0.12,
+            0.35
+          ]
+        },
+        "immersion_tin": {
+          "film_um": [
+            0.8,
+            1.3
+          ]
+        }
+      },
+      "test": {
+        "min_pad": {
+          "value": 0.08,
+          "unit": "mm"
+        },
+        "shipping_test": true,
+        "reliability_test": true,
+        "shipping_report": true
+      },
+      "tolerance_class": {
+        "value": "IPC 3级"
+      }
+    },
+    "capability_summary": {
+      "min_line_spacing": "50.0/50.0um",
+      "min_mech_drill": 0.15,
+      "annular_ring_mech_mm": 0.1,
+      "pth_aspect_ratio": null,
+      "solder_mask_bridge_mm": 0.08,
+      "silkscreen_min_mm": 0.07619999999999999,
+      "copper_um": 35.0,
+      "copper_oz": 1.0
+    },
+    "errors": [],
+    "warnings": [
+      "[solder_mask_bridge] 阻焊桥 0.075mm < 制程能力 0.080mm (铜厚1.0oz)"
+    ],
+    "passed": true,
+    "error_count": 0,
+    "warning_count": 1
+  }
+}

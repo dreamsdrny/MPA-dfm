@@ -1,0 +1,40 @@
+============================================================
+  BRD-AI: PCB Constraint Generation Report
+============================================================
+  Board: 860-000776_PSE_Board
+  Time:  2026-08-28 15:46:28
+============================================================
+
+Total Nets:       82
+Net Classes:      13
+Diff Pairs:       4
+Physical Rules:   13
+Spacing Rules:    13
+Electrical Rules: 2
+Via Rules:        13
+
+DFM Passed:       YES
+DFM Errors:       0
+DFM Warnings:     1
+
+--- DFM Warnings ---
+  [WARN]  [solder_mask_bridge] 阻焊桥 0.075mm < 制程能力 0.080mm (铜厚1.0oz)
+
+--- Net Classes ---
+  CAN                     2 nets  CAN         DIFF
+  CLOCK                   2 nets  CLOCK       
+  DEFAULT                10 nets              
+  ETHERNET               22 nets  ETHERNET    DIFF
+  GATE_DRIVE              8 nets              
+  GND                     7 nets              GND
+  I2C                     2 nets  I2C         
+  JTAG                    5 nets  JTAG        
+  LED                     2 nets              
+  POWER                   8 nets              PWR
+  RESET                   3 nets              
+  SENSE                   8 nets              
+  SPI                     3 nets  SPI         
+
+============================================================
+  Report Complete
+============================================================

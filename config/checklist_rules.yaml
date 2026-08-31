@@ -1,0 +1,65 @@
+# ============================================================
+# BRD-AI: PCB Layout Constraint Rules (从Layout Checklist提取)
+# ============================================================
+
+# 间距规则 (对应Checklist #38, #39)
+spacing:
+  pth_to_smd:          { min: 1.5,  unit: mm, source: "checklist_38" }
+  shield_to_smt:       { min: 0.5,  unit: mm, source: "checklist_38" }
+  "0201_side":         { min: 0.254, unit: mm, source: "checklist_38" }
+  "0402_side":         { min: 0.3,  unit: mm, source: "checklist_38" }
+  "0603_side_side":    { min: 0.4,  unit: mm, source: "checklist_38" }
+  "0603_term_term":    { min: 0.3,  unit: mm, source: "checklist_38" }
+  different_device_pad: { min: 0.25, unit: mm, source: "checklist_38" }
+  ic_to_ic:            { min: 1.25, unit: mm, source: "checklist_38" }
+  ic_to_chip:          { min: 0.63, unit: mm, source: "checklist_38" }
+  pth_to_pth:          { min: 2.5,  unit: mm, source: "checklist_38" }
+  smd_to_connector:    { min: 3.0,  unit: mm, source: "checklist_39" }
+  metal_shell_gap:     { min: 1.0,  unit: mm, source: "checklist_11" }
+
+# 高速信号规则 (对应Checklist #46-#71)
+high_speed:
+  three_w_principle:    { spacing: 3.0, unit: w, source: "checklist_48" }
+  lvds_ttl_isolation:   { spacing: "5H",       source: "checklist_51" }
+  serpentine_parallel_single: { spacing: 3.0, unit: w, source: "checklist_63" }
+  serpentine_parallel_diff:   { spacing: 5.0, unit: w, source: "checklist_63" }
+  gnd_via_within:       { distance: 50, unit: mil, source: "checklist_53" }
+  diff_impedance_tolerance: { tolerance: 10, unit: percent, source: "checklist_42" }
+
+# 电源/GND规则 (对应Checklist #84-#89)
+power:
+  outer_current:     { capacity: 1.0, unit: "A/mm", source: "checklist_84" }
+  inner_current:     { capacity: 0.5, unit: "A/mm", source: "checklist_84" }
+  twenty_h:          { indent: "20H", source: "checklist_85" }
+
+# 板边规则 (对应Checklist #94-#99)
+board_edge:
+  outer_copper_to_edge: { min: 0.3, unit: mm, source: "checklist_98" }
+  inner_copper_to_edge: { min: 0.5, unit: mm, source: "checklist_99" }
+  mounting_hole_clearance: { min: 4.0, unit: mm, source: "checklist_94" }
+
+# 测试点规则 (对应Checklist #117-#119)
+test_point:
+  diameter:        { min: 0.8, unit: mm, source: "checklist_117" }
+  edge_to_edge:    { min: 0.47, unit: mm, source: "checklist_117" }
+  to_board_edge:   { min: 2.5, unit: mm, source: "checklist_119" }
+  to_position_hole: { min: 5.0, unit: mm, source: "checklist_119" }
+
+# 丝印规则 (对应Checklist #103)
+silkscreen:
+  line_width:  { min: 0.15, unit: mm, source: "checklist_103" }
+
+# 阻焊规则 (对应Checklist #128-#131)
+solder_mask:
+  bridge: { min: 0.075, unit: mm, source: "checklist_128" }
+
+# 差分阻抗预设 (按协议)
+differential_impedance:
+  USB3:     { impedance: 90, tolerance: 15, unit: ohm }
+  DDR:      { impedance: 100, tolerance: 10, unit: ohm }
+  PCIE:     { impedance: 85, tolerance: 15, unit: ohm }
+  MIPI:     { impedance: 100, tolerance: 10, unit: ohm }
+  LVDS:     { impedance: 100, tolerance: 10, unit: ohm }
+  Ethernet: { impedance: 100, tolerance: 10, unit: ohm }
+  RF:       { impedance: 50, tolerance: 5, unit: ohm }
+  default:  { impedance: 100, tolerance: 10, unit: ohm }
