@@ -25,3 +25,7 @@ Desktop.ini
 # Logs / temp
 *.log
 *.dmp
+
+# output: only auto_constraint.il is tracked
+output/*
+!output/auto_constraint.il
