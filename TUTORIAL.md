@@ -1,5 +1,9 @@
 # BRD-AI 使用教程
 
+打包 命令 
+
+python -m PyInstaller --clean --noconfirm --name="BRD-ai-09-02" --windowed --add-data="config/checklist_rules.yaml;config" --add-data="config/dfm_capability_hongban.yaml;config" --add-data="config/dfm_capability_sihui.yaml;config" --hidden-import=openpyxl --hidden-import=yaml --hidden-import=jinja2 gui.py
+
 > Cadence Allegro PCB Layout Constraint 自动生成系统
 
 BRD-AI 是一个自动化工具，用于将 **PCB Layout Checklist 规则** 与 **PCB 厂制程能力** 自动转换为 **Cadence Allegro 可直接执行的 SKILL 约束脚本**，并同步生成约束报告、DFM 制程能力校验报告与已填写的 Checklist。

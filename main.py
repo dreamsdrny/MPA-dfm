@@ -8,15 +8,15 @@ Cadence Allegro PCB Constraint 自动生成系统
     python main.py --capability advanced    # 使用高级制程能力
     python main.py --demo                   # 使用内置演示数据运行
 """
-import argparse
-import json
-import os
-import sys
-from datetime import datetime
+import argparse #导入 argparse 模块用于解析命令行参数
+import json 
+import os    # 系统模块，用于文件路径操作
+import sys # 用于路径和系统操作
+from datetime import datetime 
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from src.pcb_reader import extract_brd_info
+from src.pcb_reader import extract_brd_info  # 导入PCB信息提取模块
 from src.signal_classifier import classify_and_export
 from src.rule_engine import compute_class_constraints
 from src.dfm_engine import validate_constraints

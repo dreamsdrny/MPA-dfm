@@ -4,7 +4,7 @@ BRD-AI: Checklist自动填写引擎
 """
 import os
 import re
-import copy
+import copy # 
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -12,8 +12,9 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-
-PASS_FILL = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+#通过浅绿色，红色，黄色，蓝色，灰色填充单元格来表示不同的检查结果
+#浅蓝灰色，需要人工确认
+PASS_FILL = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid") 
 FAIL_FILL = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
 WARN_FILL = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
 MANUAL_FILL = PatternFill(start_color="D9E2F3", end_color="D9E2F3", fill_type="solid")
@@ -21,10 +22,10 @@ NA_FILL = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid
 HEADER_FILL = PatternFill(start_color="2F5496", end_color="2F5496", fill_type="solid")
 
 THIN_BORDER = Border(
-    left=Side(style="thin"), right=Side(style="thin"),
+    left=Side(style="thin"), right=Side(style="thin"),  
     top=Side(style="thin"), bottom=Side(style="thin"),
 )
-
+# 字典，自动校验规则
 VERIFIABLE_RULES = {
     37: {"category": "constraint", "desc": "设计约束规则已在Constraint Manager中设置",
          "check": lambda r: ("auto_pass", "由BRD-AI自动生成约束规则")},
@@ -108,14 +109,14 @@ MANUAL_REQUIRED = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 16, 17,
 
 
 def _read_checklist_rows(excel_path: str) -> List[dict]:
-    wb = openpyxl.load_workbook(excel_path, data_only=True)
-    sheet_names = [s.lower() for s in wb.sheetnames]
-    sheet_name = "check list" if "check list" in sheet_names else wb.sheetnames[-1]
-    ws = wb[sheet_name]
-    wb.close()
+    wb = openpyxl.load_workbook(excel_path, data_only=True) # 打开Excel文件，data_only=True表示读取公式计算后的值
+    sheet_names = [s.lower() for s in wb.sheetnames] # 获取所有工作表名称并转换为小写
+    sheet_name = "check list" if "check list" in sheet_names else wb.sheetnames[-1]  # 如果存在名为"check list"的工作表，则使用它，否则使用最后一个工作表
+    ws = wb[sheet_name] # 获取指定工作表对象
+    wb.close() 
 
-    header_row = 3
-    rows = []
+    header_row = 3 #头
+    rows = [] #行
     current_category = ""
     current_subcategory = ""
 

@@ -22,36 +22,36 @@ from src.checklist_auto_fill import auto_fill_checklist, generate_checklist_summ
 from src.checklist_reader import read_checklist_excel
 
 
-class BRD_AIGUI:
+class BRD_AIGUI: 
     def __init__(self):
-        self.root = tk.Tk()
+        self.root = tk.Tk()  #主界面
         self.root.title("BRD-AI: Cadence Allegro Constraint Generator")
-        self.root.geometry("780x680")
-        self.root.resizable(True, True)
+        self.root.geometry("780x680")  #分辨率
+        self.root.resizable(True, True) #设置窗口大小可变
 
-        self.brd_path = tk.StringVar()
-        self.checklist_path = tk.StringVar()
-        self.output_dir = tk.StringVar()
-        self.factory = tk.StringVar(value="hongban")
-        self.board_type = tk.StringVar(value="rigid")
-        self.capability_level = tk.StringVar(value="standard")
-        self.copper_um = tk.StringVar(value="35")
-        self.copper_oz = tk.StringVar(value="1.0")
-        self.net_list_var = tk.StringVar()
+        self.brd_path = tk.StringVar()   # BRD 文件路径
+        self.checklist_path = tk.StringVar()  # Checklist 文件路径
+        self.output_dir = tk.StringVar()  # 输出目录
+        self.factory = tk.StringVar(value="hongban")  # 工厂
+        self.board_type = tk.StringVar(value="rigid")  # 板类型
+        self.capability_level = tk.StringVar(value="standard")  # 能力级别
+        self.copper_um = tk.StringVar(value="35")  # 铜层厚度 (微米)
+        self.copper_oz = tk.StringVar(value="1.0")  # 铜层厚度 (盎司)
+        self.net_list_var = tk.StringVar()  # 网络列表
 
         self._build_ui()
 
     def _build_ui(self):
-        main_frame = ttk.Frame(self.root, padding=15)
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        main_frame = ttk.Frame(self.root, padding=15)  # 设置主界面框架
+        main_frame.pack(fill=tk.BOTH, expand=True) # 设置主界面框架填充和扩展
 
         # ---- Title ----
         title = ttk.Label(main_frame, text="BRD-AI: Cadence Allegro Constraint Generator",
-                          font=("Arial", 14, "bold"))
-        title.pack(pady=(0, 15))
+                          font=("Arial", 14, "bold")) # 设置标题
+        title.pack(pady=(0, 15)) # 设置标题的上下边距
 
         # ---- Input Files Frame ----
-        input_frame = ttk.LabelFrame(main_frame, text="Input Files", padding=10)
+        input_frame = ttk.LabelFrame(main_frame, text="Input Files", padding=10)  # 设置输入文件框架
         input_frame.pack(fill=tk.X, pady=(0, 10))
 
         ttk.Label(input_frame, text="BRD File:").grid(row=0, column=0, sticky=tk.W, pady=2)

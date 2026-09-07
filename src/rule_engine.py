@@ -2,7 +2,7 @@
 BRD-AI: 规则计算引擎 (Module 3)
 根据Checklist规则和信号分类结果，计算每个Net Class的约束参数
 """
-import yaml
+import yaml #解析yaml文件
 import os
 from typing import Dict, Any, Optional
 
