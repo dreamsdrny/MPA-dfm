@@ -169,8 +169,8 @@ def _read_checklist_rows(excel_path: str) -> List[dict]:
 
 
 def _determine_check_result(item: dict, brd_info: dict, analysis_result: dict) -> Tuple[str, str, str]:
-    item_no = item["no"]
-    standard = item["standard"]
+    item_no = item["no"] 
+    standard = item["standard"] 
     grade_type = item["grade_type"]
     item_text = item["items"]
 
