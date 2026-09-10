@@ -120,25 +120,25 @@ def _read_checklist_rows(excel_path: str) -> List[dict]:
     current_category = ""  #当前类别
     current_subcategory = "" #当前子类别
 
-    for row_idx in range(header_row + 1, ws.max_row + 1):
-        no_val = ws.cell(row_idx, 3).value
-        if no_val is None:
+    for row_idx in range(header_row + 1, ws.max_row + 1):   #遍历每一行，从header_row+1开始到最大行数
+        no_val = ws.cell(row_idx, 3).value  #3列（序号列）的值
+        if no_val is None:  #不存在就结束
             continue
 
-        cat_text = str(ws.cell(row_idx, 1).value or "")
-        if cat_text.strip():
-            current_category = cat_text.strip()
+        cat_text = str(ws.cell(row_idx, 1).value or "") # 1列（类别列）的值
+        if cat_text.strip(): # 如果类别列不为空，则更新当前类别
+            current_category = cat_text.strip() # 当前类别
 
-        sub_text = str(ws.cell(row_idx, 2).value or "")
-        if sub_text.strip():
+        sub_text = str(ws.cell(row_idx, 2).value or "") # 以此类推
+        if sub_text.strip():  
             current_subcategory = sub_text.strip()
-
-        try:
+# 检查，ValueError "abc"字符串无法转数字，“12a3” TypeError None无法 调整类型
+        try:  
             item_no = int(no_val)
         except (ValueError, TypeError):
             continue
 
-        grade = str(ws.cell(row_idx, 4).value or "").strip()
+        grade = str(ws.cell(row_idx, 4).value or "").strip()  #类推
         item_text = str(ws.cell(row_idx, 5).value or "").strip()
         standard = str(ws.cell(row_idx, 6).value or "").strip()
         note = str(ws.cell(row_idx, 7).value or "").strip()
