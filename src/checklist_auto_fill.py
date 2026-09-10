@@ -4,7 +4,7 @@ BRD-AI: Checklist自动填写引擎
 """
 import os
 import re
-import copy # 
+import copy 
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -117,8 +117,8 @@ def _read_checklist_rows(excel_path: str) -> List[dict]:
 
     header_row = 3 #头
     rows = [] #行
-    current_category = ""
-    current_subcategory = ""
+    current_category = ""  #当前类别
+    current_subcategory = "" #当前子类别
 
     for row_idx in range(header_row + 1, ws.max_row + 1):
         no_val = ws.cell(row_idx, 3).value
