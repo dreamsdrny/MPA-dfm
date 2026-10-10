@@ -32,6 +32,8 @@ python -m PyInstaller --clean --noconfirm ^
     --hidden-import=src.signal_classifier ^
     --hidden-import=src.rule_engine ^
     --hidden-import=src.dfm_engine ^
+    --hidden-import=src.dfm_rules ^
+    --hidden-import=src.dfm_report ^
     --hidden-import=src.skill_generator ^
     --hidden-import=src.report_generator ^
     --hidden-import=src.checklist_reader ^

@@ -455,6 +455,8 @@ DFM_FIELDS = [
     ("拼板/板尺寸", "board_size_y", "板尺寸Y (mm)", "80"),
     ("线路", "min_line_width", "最小线宽 (mm)", "0.10"),
     ("线路", "min_spacing", "最小线距 (mm)", "0.10"),
+    ("线路", "inner_line_width", "内层线宽 (mm)", ""),
+    ("线路", "inner_spacing", "内层线距 (mm)", ""),
     ("线路", "copper_um", "成品铜厚 (um)", "35"),
     ("线路", "pth_to_pth_spacing", "不同网络孔壁间距 (mm)", "0.3"),
     ("线路", "copper_to_edge_inner", "内层线路到板边 (mm)", "0.25"),
@@ -463,13 +465,34 @@ DFM_FIELDS = [
     ("钻孔", "max_mech_drill", "最大机械钻孔 (mm)", ""),
     ("钻孔", "min_laser_via", "最小激光孔 (mm)", ""),
     ("钻孔", "min_annular_ring", "单边孔环 (mm)", "0.076"),
+    ("钻孔", "min_annular_ring_laser", "激光孔单边孔环 (mm)", ""),
     ("钻孔", "board_thickness", "板厚 (mm)", "1.6"),
     ("钻孔", "npth_to_edge", "NPTH孔到板边 (mm)", "0.5"),
     ("阻焊", "solder_mask_bridge", "阻焊桥 (mm)", "0.10"),
     ("阻焊", "solder_mask_opening", "阻焊开窗 (mm)", "0.10"),
+    ("阻焊", "solder_mask_ink_um", "阻焊油墨厚度 (um)", ""),
     ("塞孔", "plug_hole_diameter", "塞孔孔径 (mm)", ""),
+    ("塞孔", "resin_plug_depth_percent", "树脂塞孔深度 (%)", ""),
+    ("塞孔", "ink_plug_depth_percent", "油墨塞孔深度 (%)", ""),
     ("丝印", "silkscreen_width", "丝印线宽 (mm)", "0.15"),
     ("丝印", "silkscreen_clearance", "丝印间隙 (mm)", "0.15"),
+    ("丝印", "silkscreen_to_mask", "丝印到阻焊 (mm)", ""),
+    ("丝印", "silkscreen_to_outline", "丝印离成型线 (mm)", ""),
+    ("组装", "min_component_spacing", "器件最小间距 (mm)", "0.5"),
+    ("组装", "fiducial_count_top", "A面基准点数量", "3"),
+    ("组装", "fiducial_count_bottom", "B面基准点数量", "3"),
+    ("组装", "component_to_edge", "器件到板边 (mm)", "2"),
+    ("组装", "test_pad_diameter", "测试点直径 (mm)", "0.8"),
+    ("组装", "chip_pad_symmetry_ratio", "片式焊盘对称比", "0.9"),
+    ("组装", "bga_pitch", "BGA/QFN引脚间距 (mm)", ""),
+    ("组装", "bga_pad_annular", "BGA单边孔环 (mm)", ""),
+    ("拼板", "panel_size_x", "拼板尺寸X (mm)", ""),
+    ("拼板", "panel_size_y", "拼板尺寸Y (mm)", ""),
+    ("拼板", "process_edge_mm", "工艺边宽度 (mm)", ""),
+    ("拼板", "mark_count", "Mark点数量", ""),
+    ("拼板", "mark_to_edge_mm", "Mark到工艺边 (mm)", ""),
+    ("拼板", "tooling_hole_count", "定位孔数量", ""),
+    ("拼板", "panel_utilization", "板材利用率(0-1)", ""),
     ("覆盖膜(软板)", "coverlay_spacing", "覆盖膜开窗间距 (mm)", "0.5"),
     ("覆盖膜(软板)", "coverlay_to_pad", "开窗到焊盘 (mm)", "0.3"),
     ("覆盖膜(软板)", "coverlay_to_trace", "开窗到线路 (mm)", "0.15"),
@@ -519,7 +542,20 @@ class DFMDialog:
         self.copper_oz = tk.StringVar(value="1.0")
         ttk.Entry(top, textvariable=self.copper_oz, width=5).pack(side=tk.LEFT, padx=(2, 12))
 
+        ttk.Label(top, text="表面处理:").pack(side=tk.LEFT)
+        self.surface_finish = tk.StringVar(value="")
+        self.finish_combo = ttk.Combobox(top, textvariable=self.surface_finish,
+                                         values=["", "ENIG", "OSP", "hard_gold", "ENEPIG"],
+                                         state="readonly", width=10)
+        self.finish_combo.pack(side=tk.LEFT, padx=(2, 12))
+
+        self.polarity_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(top, text="极性已标注", variable=self.polarity_var).pack(side=tk.LEFT, padx=(0, 8))
+        self.panelized_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(top, text="已拼板", variable=self.panelized_var).pack(side=tk.LEFT, padx=(0, 8))
+
         ttk.Button(top, text="执行分析", command=self._run).pack(side=tk.LEFT, padx=8)
+        ttk.Button(top, text="导出报告", command=self._export).pack(side=tk.LEFT, padx=4)
         ttk.Button(top, text="关闭", command=self.win.destroy).pack(side=tk.RIGHT)
 
         body = ttk.Frame(self.win, padding=8)
@@ -594,15 +630,23 @@ class DFMDialog:
                 return
         if "board_size_x" in design and "board_size_y" in design:
             design["board_size"] = [design.pop("board_size_x"), design.pop("board_size_y")]
+        if "panel_size_x" in design and "panel_size_y" in design:
+            design["panel_size"] = [design.pop("panel_size_x"), design.pop("panel_size_y")]
         try:
             copper_oz = float(self.copper_oz.get() or 1.0)
         except ValueError:
             copper_oz = 1.0
         design["copper_oz"] = copper_oz
+        if self.surface_finish.get().strip():
+            design["surface_finish"] = self.surface_finish.get().strip()
+        design["polarity_marked"] = self.polarity_var.get()
+        design["panelized"] = self.panelized_var.get()
 
         result = self._analyze(design, board_type=self.board_type.get(),
                                capability_level=self.level.get(),
                                factory=self.factory.get())
+        self.last_result = result
+        self.last_design = design
 
         for row in self.tree.get_children():
             self.tree.delete(row)
@@ -615,10 +659,35 @@ class DFMDialog:
                              values=(icon[it["status"]], it["category"], msg),
                              tags=(it["status"],))
         verdict = "DFM PASS" if result["passed"] else "DFM FAIL"
+        risk = result.get("risk", {})
+        risk_txt = f" | 评分 {risk.get('score')}/100 ({risk.get('risk_level')})" if risk else ""
         self.status_var.set(
             f"{result['factory_label']} {result['board_type_label']} - {result['capability_label']} | "
             f"{verdict} (错误 {result['error_count']}, 警告 {result['warning_count']}, "
-            f"共 {len(result['items'])} 项)")
+            f"共 {len(result.get('issues', []))} 项问题){risk_txt}")
+
+    def _export(self):
+        result = getattr(self, "last_result", None)
+        if not result:
+            messagebox.showwarning("提示", "请先执行分析")
+            return
+        path = filedialog.asksaveasfilename(
+            title="导出 DFM 报告",
+            defaultextension=".xlsx",
+            initialfile="dfm_report.xlsx",
+            filetypes=[("Excel", "*.xlsx"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            from src.dfm_report import generate_dfm_excel, generate_dfm_text
+            board_meta = {"board_name": self.last_design.get("board_name", "")}
+            generate_dfm_excel(result, path, board_meta)
+            txt_path = os.path.splitext(path)[0] + ".txt"
+            generate_dfm_text(result, txt_path, board_meta)
+            messagebox.showinfo("导出完成", f"Excel: {path}\nText:  {txt_path}")
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("导出失败", str(exc))
 
 
 def main():

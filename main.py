@@ -376,7 +376,19 @@ Examples:
         json_out = os.path.join(out_dir, "dfm_analysis.json")
         with open(json_out, "w", encoding="utf-8") as f:
             json.dump(result, f, indent=2, ensure_ascii=False, default=str)
-        print(f"  详细报告: {json_out}")
+        print(f"  详细报告(JSON): {json_out}")
+
+        from src.dfm_report import generate_dfm_excel, generate_dfm_text
+        board_meta = design.get("board_meta", {}) if isinstance(design, dict) else {}
+        if isinstance(design.get("board_name"), str):
+            board_meta.setdefault("board_name", design.get("board_name"))
+        xlsx_out = generate_dfm_excel(result, os.path.join(out_dir, "dfm_report.xlsx"), board_meta)
+        txt_out = generate_dfm_text(result, os.path.join(out_dir, "dfm_report.txt"), board_meta)
+        print(f"  DFM报告(Excel): {xlsx_out}")
+        print(f"  DFM报告(Text):  {txt_out}")
+        risk = result.get("risk", {})
+        if risk:
+            print(f"  可制造性评分: {risk.get('score')}/100  风险等级: {risk.get('risk_level')}")
         return
 
     if args.gui:

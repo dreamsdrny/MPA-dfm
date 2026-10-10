@@ -356,12 +356,17 @@ def analyze_design(design: dict, board_type: str = "rigid",
             status = "pass" if ar <= pth_ar else "fail"
             if status == "pass" and ar >= pth_ar * 0.8:
                 status = "warn_limit"
+            if ar > pth_ar:
+                ar_msg = f"纵横比 {ar:.2f}:1 (板厚{board_thickness}mm/孔径{ar_drill}mm) 超过能力 {pth_ar:.0f}:1"
+            elif status == "warn_limit":
+                ar_msg = f"纵横比 {ar:.2f}:1 (板厚{board_thickness}mm/孔径{ar_drill}mm) 接近制程极限 {pth_ar:.0f}:1"
+            else:
+                ar_msg = f"纵横比 {ar:.2f}:1 (板厚{board_thickness}mm/孔径{ar_drill}mm) 满足能力 {pth_ar:.0f}:1"
             items.append({
                 "category": "钻孔", "item": "PTH纵横比",
                 "design": round(ar, 2), "capability": pth_ar, "unit": ":1",
                 "status": status,
-                "message": f"纵横比 {ar:.2f}:1 (板厚{board_thickness}mm/孔径{ar_drill}mm) "
-                           f"{'超过' if ar > pth_ar else '满足'}能力 {pth_ar:.0f}:1",
+                "message": ar_msg,
                 "note": plating.get("pth_aspect_ratio", {}).get("note", ""),
             })
 
@@ -461,7 +466,7 @@ def analyze_design(design: dict, board_type: str = "rigid",
     warnings = [it for it in items if it["status"] == "warn_limit"]
     infos = [it for it in items if it["status"] == "info"]
 
-    return {
+    result = {
         "factory": factory,
         "factory_label": factory_label(factory),
         "board_type": board_type,
@@ -478,6 +483,25 @@ def analyze_design(design: dict, board_type: str = "rigid",
         "warning_count": len(warnings),
         "passed": len(errors) == 0,
     }
+
+    try:
+        from src.dfm_rules import build_issue_report
+        report = build_issue_report(
+            design=design, capability=capability, board_type=board_type,
+            factory=factory, factory_label=factory_label(factory), items=items,
+        )
+        result["issues"] = report["issues"]
+        result["issue_summary"] = report["issue_summary"]
+        result["risk"] = report["risk"]
+        result["info_stats"] = report["info"]
+    except Exception as exc:  # noqa: BLE001
+        result["issues"] = []
+        result["issue_summary"] = {}
+        result["risk"] = {}
+        result["info_stats"] = {}
+        result["issue_error"] = str(exc)
+
+    return result
 
 
 # ============================================================
