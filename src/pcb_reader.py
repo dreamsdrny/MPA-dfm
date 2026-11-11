@@ -34,12 +34,17 @@ def extract_brd_info(brd_path: str) -> dict:
 
     info["nets"] = _extract_nets(text)
     info["layers"] = _extract_layers(text)
+    raw_layer_count = 0
+    if not info["layers"]:
+        filled = _layers_from_raw(raw)
+        if filled:
+            info["layers"], raw_layer_count = filled
     info["components"] = _extract_components(text)
     info["stackup"] = _extract_stackup(text)
     info["diff_pairs"] = _extract_diff_pairs_from_brd(text)
     info["power_nets"] = _extract_power_nets(info["nets"])
     info["net_count"] = len(info["nets"])
-    info["layer_count"] = len(info["layers"])
+    info["layer_count"] = max(len(info["layers"]), raw_layer_count)
 
     return info
 
@@ -102,6 +107,47 @@ def _extract_layers(text: str) -> List[dict]:
         layer["type"] = common_layers.get(layer["name"], "unknown")
 
     return layers
+
+
+def _layer_type(name: str) -> str:
+    up = name.upper()
+    if up.startswith("L") and "_" in up:
+        kind = up.split("_", 1)[1]
+        if kind in ("PWR", "PLANE", "GND"):
+            return "plane"
+        if kind in ("SIG", "SIGNAL", "INNER"):
+            return "signal"
+    return "unknown"
+
+
+def _layers_from_raw(raw: bytes) -> Optional[tuple]:
+    """旧版文本匹配拿不到层时, 用二进制扫描的层名与元数据补齐叠层。"""
+    try:
+        from src.brd_raw import scan_brd_raw
+        scan = scan_brd_raw(raw)
+    except Exception:
+        return None
+
+    count = int(scan.get("layer_count") or 0)
+    names = list((scan.get("layers") or {}).get("names") or [])
+    if not count and not names:
+        return None
+
+    def _idx(name: str) -> int:
+        digits = "".join(ch for ch in name.split("_")[0] if ch.isdigit())
+        return int(digits) if digits else 0
+
+    layers: List[dict] = []
+    if count:
+        layers.append({"name": "TOP", "type": "signal"})
+    for name in sorted(names, key=_idx):
+        layers.append({"name": name, "type": _layer_type(name)})
+    if count:
+        layers.append({"name": "BOTTOM", "type": "signal"})
+    if not layers:
+        layers = [{"name": f"L{i + 1}", "type": "unknown"} for i in range(count)]
+
+    return layers, max(count, len(layers))
 
 
 def _extract_components(text: str) -> List[dict]:

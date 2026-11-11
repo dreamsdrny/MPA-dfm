@@ -1,0 +1,263 @@
+# =============================================================================
+# Checklist 自动填写配置
+# =============================================================================
+# 换一版 checklist.xlsx 后通常不用改代码, 只需按需改这个文件:
+#   1) 表头文字变了   -> 在 template.columns 的别名里加一个词
+#   2) 新增了检查项   -> 在 rules 里加一条 (关键词 + 判定方式)
+#   3) 只是行号变了   -> 什么都不用改 (列按表头识别, 规则按内容匹配)
+#
+# rules 从上往下匹配, 第一条命中即用:
+#   all: 关键词必须全部出现      any: 任一出现即可      not: 出现则不匹配
+#   category: 限定类别          when: 条件成立时判 N/A
+#
+# result 判定方式:
+#   judge   用 BRD/DFM 数据判定 (见 judge)
+#   attest  工具确实做成了这件事 (judge.kind=count)
+#   manual  固定判为需人工确认 (manual 写原因)
+#   na      固定判为不适用
+#
+# judge.kind:
+#   compare   字段比较: field op value  或  field op other * scale
+#   dfm       看 DFM 校验项: item (支持部分匹配), pass/fail/warn_limit
+#   dfm_all   DFM 全部通过才 PASS, 否则 MANUAL
+#   count     数量比较: field >= min
+#
+# 文本里的 {字段} 会替换成实际值, 字段不存在显示 "—"
+# =============================================================================
+
+version: 2
+
+template:
+  sheet_candidates: ["check list", "checklist", "check_list", "检查表", "layout checklist"]
+  header_scan_rows: 15
+  columns:
+    category:    ["类别", "category", "项目", "阶段"]
+    subcategory: ["子类别", "sub category", "子项", "分项"]
+    "no":        ["编号", "no.", "no", "序号", "项次"]   # 加引号: YAML 会把裸 no 解析成布尔
+    grade:       ["级别", "grade", "等级", "重要度"]
+    items:       ["条目内容", "items", "item", "检查项", "检查内容", "条目"]
+    standard:    ["符合标准", "meeting standards", "meeting", "标准"]
+    note:        ["原因说明", "note", "备注", "说明", "原因"]
+    check:       ["检查", "check", "检查结果", "结果"]
+    approved:    ["签核", "approved", "确认", "审批"]
+  required: ["no", "items", "check"]
+
+rules:
+  # ---------------------------------------------------------------- 1 约束类
+  - id: constraint_manager
+    all: ["constraint manager"]
+    result: attest
+    judge: {kind: count, field: constraint_total, min: 1}
+    pass: "BRD-AI 已生成物理/间距/电气/过孔约束共 {constraint_total} 条; 需在 Allegro 载入后生效"
+    missing: "未能从 BRD 生成约束, 请检查约束库"
+
+  - id: physical_electrical_rules
+    all: ["物理", "电气"]
+    result: attest
+    judge: {kind: count, field: constraint_total, min: 1}
+    pass: "已按 {net_classes} 个网络类生成 {constraint_total} 条约束 (物理 {physical_count} / 间距 {spacing_count} / 电气 {electrical_count} / 过孔 {via_count})"
+    missing: "未能生成物理/电气约束"
+
+  # ---------------------------------------------------------------- 2 叠层/板厚
+  - id: stackup
+    all: ["叠层", "厚度"]
+    result: judge
+    judge: {kind: dfm, item: "板厚"}
+    pass: "叠层 {layer_count} 层, 板厚 {board_thickness} mm 满足制程能力"
+    fail: "板厚 {board_thickness} mm 超出制程能力, 请与板厂确认"
+    missing: "叠层 {layer_count} 层 / 板厚 {board_thickness} mm, 需与工艺确认方案"
+
+  # ---------------------------------------------------------------- 3 阻抗/高速
+  - id: diff_impedance
+    all: ["阻抗", "差分"]
+    when: {field: diff_pairs, op: "==", value: 0}
+    result: na
+    manual: "BRD 内识别到 0 对差分信号, 本项不适用"
+    missing: "差分阻抗需 SI 仿真计算, 请提供阻抗报告"
+
+  - id: diff_equal_length
+    all: ["等长"]
+    when: {field: diff_pairs, op: "==", value: 0}
+    result: na
+    manual: "BRD 内识别到 0 对差分信号, 本项不适用"
+    missing: "等长/对称需在 Allegro 内检查, 共 {diff_pairs} 对差分"
+
+  - id: impedance_per_layer
+    all: ["阻抗", "各层"]
+    when: {field: diff_pairs, op: "==", value: 0}
+    result: na
+    manual: "无可计算阻抗的差分信号"
+
+  - id: si_constraint
+    all: ["si约束"]
+    manual: "SI 约束需仿真结论支撑, 当前识别 {net_classes} 个网络类、{diff_pairs} 对差分"
+
+  - id: three_w
+    any: ["3w"]
+    result: verify
+    judge: {kind: count, field: has_3w_rule, min: 1}
+    verify: "BRD 内已定义 3W 间距规则 ({spacing_3w} mm), 需 DRC 验证实际布线"
+    missing: "BRD 内没有 3W 间距规则, 3W 原则需在 Allegro 中检查"
+
+  - id: twenty_h
+    all: ["20h"]
+    manual: "20H 原则需查看电源/地平面缩进, BRD 未提供铜皮几何"
+
+  # ---------------------------------------------------------------- 4 过孔/钻孔
+  - id: via_in_pad
+    all: ["回流焊面", "过孔"]
+    manual: "过孔到焊盘间距需 DRC 检查, BRD 未提供走线/焊盘几何"
+
+  - id: via_arrangement
+    all: ["过孔的排列"]
+    manual: "过孔密度与平面断裂需查看铜皮, BRD 未提供几何数据"
+
+  - id: aspect_ratio
+    any: ["1/10", "aspect ratio", "纵横比"]
+    result: judge
+    judge: {kind: compare, field: min_mech_drill, op: ">=", other: board_thickness, scale: 0.1}
+    pass: "最小机械孔径 {min_mech_drill} mm ≥ 板厚/10 ({board_thickness} mm ÷ 10)"
+    fail: "最小机械孔径 {min_mech_drill} mm < 板厚/10 ({board_thickness} mm ÷ 10), 请与板厂确认"
+    missing: "缺最小孔径或板厚, 请补填后再判定"
+
+  # ---------------------------------------------------------------- 5 铜到板边
+  - id: copper_to_edge_outer
+    all: ["外层铜皮", "板边"]
+    result: judge
+    judge: {kind: compare, field: copper_to_edge_outer, op: ">=", value: 0.3}
+    pass: "外层线路到板边 {copper_to_edge_outer} mm ≥ 0.3 mm"
+    fail: "外层线路到板边 {copper_to_edge_outer} mm < 0.3 mm"
+    missing: "BRD 未提供铜皮到板边距离, 请手工测量"
+
+  - id: copper_to_edge_inner
+    all: ["内层", "板边"]
+    result: judge
+    judge: {kind: compare, field: copper_to_edge_inner, op: ">=", value: 0.5}
+    pass: "内层铜皮到板边 {copper_to_edge_inner} mm ≥ 0.5 mm"
+    fail: "内层铜皮到板边 {copper_to_edge_inner} mm < 0.5 mm"
+    missing: "BRD 未提供内层铜皮到板边距离, 请手工测量"
+
+  - id: npth_to_copper
+    all: ["非金属化孔", "铜箔"]
+    manual: "非金属化孔到铜皮间距需在 Allegro 中测量"
+
+  # ---------------------------------------------------------------- 6 测试点
+  - id: test_point_diameter
+    any: ["测试点直径"]
+    result: judge
+    judge: {kind: compare, field: test_pad_diameter, op: ">=", value: 0.8}
+    pass: "测试点直径 {test_pad_diameter} mm ≥ 0.8 mm"
+    fail: "测试点直径 {test_pad_diameter} mm < 0.8 mm"
+    missing: "BRD 未提供测试点信息, 请提供测试点报告"
+
+  - id: test_point_to_edge
+    all: ["测试点", "板边缘"]
+    manual: "测试点到板边距离需在 Allegro 中测量"
+
+  - id: impedance_rules_defined
+    any: ["阻抗"]
+    result: verify
+    judge: {kind: count, field: impedance_rule_count, min: 1}
+    verify: "BRD 内已定义阻抗规则, 需 SI 仿真/阻抗测试确认"
+    missing: "BRD 内未见阻抗规则, 请提供阻抗计算报告"
+
+  - id: spacing_rules_defined
+    any: ["线间距", "走线间距", "过孔间距", "间距规则", "铜皮间距"]
+    not: ["元件", "器件", "连接器", "焊盘", "壳体", "散热"]
+    result: verify
+    judge: {kind: count, field: spacing_rule_count, min: 1}
+    verify: "BRD 内已定义 {spacing_rule_count} 类间距规则 (最小线线间距 {spacing_rule_min} mm), 需 DRC 验证"
+    missing: "BRD 内未见线间距规则, 需在 Allegro 中手工核对"
+
+  # ---------------------------------------------------------------- 7 DRC
+  - id: drc_checked
+    any: ["drc已经调整", "不能消除drc", "every drc has been checked"]
+    result: manual
+    manual: "DRC 需在 Allegro 内逐条确认; 当前 DFM 校验: 不符合 {dfm_fail_count} 项, 错误 {dfm_error_count} 项"
+
+  - id: drc_any
+    any: ["drc"]
+    not: ["place-bound"]
+    manual: "与 DRC 相关的检查项需在 Allegro 内确认"
+
+  # ---------------------------------------------------------------- 8 类别兜底
+  # 说明: 这些条目工具无法判定, 但给出"该看什么"的提示, 报告中按类别汇总
+  - id: input_docs
+    any: ["资料是否齐全", "输入文件", "check input files"]
+    manual: "输入资料齐全性: 需人工核对文件清单 (原理图/BRD/叠层/结构图)"
+
+  - id: outline_check
+    any: ["外形图", "外形尺寸", "outline", "板框"]
+    manual: "外形/板框: 需与结构图核对 (BRD 未提供板框尺寸与公差)"
+
+  - id: board_to_board
+    any: ["主板与子板", "子板"]
+    manual: "主/子板配合: 需对照装配图确认信号与防误插"
+
+  - id: analog_mix
+    any: ["a/d", "模数", "模拟", "射频"]
+    manual: "模拟/射频类: 需按分区与回流规则检查"
+
+  - id: manual_layout
+    all: ["布局"]
+    manual: "布局类: 需目视/3D 确认器件位置、干涉与散热 (BRD 不含几何)"
+
+  - id: manual_route
+    any: ["布线", "走线", "线路"]
+    manual: "布线类: 需在 Allegro 中按约束检查 (BRD 不含走线几何)"
+
+  - id: manual_spacing
+    any: ["间距", "距离"]
+    manual: "间距类: 需在 Allegro 中测量 (BRD 不含走线/器件坐标)"
+
+  - id: manual_component
+    any: ["器件", "元件", "component"]
+    manual: "器件相关: 需目视或装配图确认"
+
+  - id: manual_silkscreen
+    any: ["丝印", "位号", "标识"]
+    manual: "丝印/标识类: 需目视确认内容与位置"
+
+  - id: manual_mask
+    any: ["阻焊", "开窗", "绿油"]
+    manual: "阻焊类: 需查看阻焊层图形"
+
+  - id: manual_panel
+    any: ["拼板", "工艺边", "panel"]
+    manual: "拼板/工艺边类: 需结合拼板图确认"
+
+  - id: manual_via
+    any: ["过孔", "钻孔"]
+    manual: "过孔/钻孔类: 需在 Allegro 中核对钻孔表与规则"
+
+  - id: manual_power
+    any: ["电源", "地平面", "gnd"]
+    manual: "电源/地类: 需查看平面与载流设计"
+
+  - id: manual_testpoint
+    any: ["测试点", "ict", "夹具"]
+    manual: "测试类: 需提供测试点/夹具报告"
+
+  - id: manual_material
+    any: ["板材", "材料", "油墨"]
+    manual: "材料类: 需与可靠性验证状态核对"
+
+  - id: manual_thermal
+    any: ["散热", "热设计", "温度"]
+    manual: "热设计类: 需结合热仿真/结构件确认"
+
+  - id: manual_fiducial
+    any: ["mark点", "光学", "基准点", "定位点"]
+    manual: "光学定位类: 需在 Allegro 中确认 Mark 点位置"
+
+  - id: manual_process
+    any: ["工艺", "可制造", "焊接"]
+    manual: "工艺类: 需与工艺/板厂确认"
+
+  - id: manual_emc
+    any: ["emc", "屏蔽", "esd", "静电"]
+    manual: "EMC/ESD 类: 需结合结构件与测试结果确认"
+
+  - id: manual_doc
+    any: ["版本", "料号", "图纸", "条码", "封面"]
+    manual: "文档/编码类: 需核对图纸与版本信息"

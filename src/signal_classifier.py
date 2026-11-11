@@ -109,8 +109,8 @@ SIGNAL_PATTERNS: Dict[str, dict] = {
     },
     "MIPI": {
         "patterns": [
-            r"^(MIPI|DSI|CSI)",
-            r"(_MIPI|_DSI|_CSI|_CLKP|_CLKN|_D[0-9]P|_D[0-9]N)",
+            r"^(MIPI|MIPN|DSI|CSI)",
+            r"(_MIPI|_MIPN|_DSI|_CSI|_CLKP|_CLKN|_D[0-9]P|_D[0-9]N)",
         ],
         "width_rule": "MIPI",
         "spacing_rule": "MIPI_3W",

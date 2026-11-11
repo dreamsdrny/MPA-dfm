@@ -1,0 +1,43 @@
+                          DRC REPORT
+                          ----------
+  Design: DEMO_BOARD
+  Date: 2026-11-09
+
+ERROR CLASS:  Line to Line Spacing
+  Layer        : TOP
+  Actual       : 0.0025
+  Required     : 0.1270
+  Location     : 2000.0 2000.0
+  Net          : SPI_CLK
+  Net          : SPI_MOSI
+
+ERROR CLASS:  Line to Line Spacing
+  Layer        : TOP
+  Actual       : 0.0040
+  Required     : 0.1270
+  Location     : 2000.0 2400.0
+  Net          : SPI_CLK
+  Net          : I2C_SDA
+
+ERROR CLASS:  Short Circuit
+  Layer        : BOTTOM
+  Actual       : 0.0000
+  Required     : 0.0000
+  Location     : 1500.0 1000.0
+  Net          : VCC_5V
+  Net          : GND
+
+ERROR CLASS:  Unconnected Pin
+  Layer        : TOP
+  Actual       : 0.0000
+  Required     : 0.0000
+  Location     : 1200.0 900.0
+  Net          : RESET_N
+  RefDes       : U3
+
+ERROR CLASS:  Line to Thru Via Spacing
+  Layer        : L3_SIG
+  Actual       : 0.0900
+  Required     : 0.1524
+  Location     : 900.0 1500.0
+  Net          : I2C_SCL

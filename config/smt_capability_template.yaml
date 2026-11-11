@@ -1,0 +1,70 @@
+# Replace null with confirmed supplier values. No example number is used as capability.
+# >=: design must be at least the supplier minimum (spacing/pitch/allowable error budget).
+# <=: design or measured value must not exceed the configured upper bound.
+# range: min <= input <= max; partial ranges are unconfigured.
+schema_version: 1
+meta:
+  factory: 待填写SMT厂商
+  revision: 未确认模板-1
+  source: 待填写厂商能力规范或产线验证报告
+profiles:
+  standard:
+    label: 常规产线
+    rules:
+      - id: SMT-SPACING
+        field: min_component_spacing
+        label: 器件最小间距
+        scope: design
+        unit: mm
+        op: ">="
+        value: null
+        severity: high
+        advice: 增大器件间距，核对封装本体、贴装及维修空间。
+      - id: SMT-PITCH
+        field: bga_pitch
+        label: BGA或QFN引脚间距
+        scope: design
+        unit: mm
+        op: ">="
+        value: null
+        severity: high
+        advice: 确认细间距钢网、锡膏、贴装和检测能力。
+      - id: SMT-EDGE
+        field: component_to_edge
+        label: 器件到板边距离
+        unit: mm
+        op: ">="
+        value: null
+        advice: 核对传送方向、工艺边和设备夹持空间。
+      - id: SMT-SYMMETRY
+        field: chip_pad_symmetry_ratio
+        label: 片式两端焊盘对称比
+        unit: ratio
+        op: ">="
+        value: null
+        advice: 复核两端焊盘和热连接不对称，作为立碑风险筛查。
+      - id: SMT-STENCIL-AR
+        field: stencil_area_ratio
+        label: 钢网最小面积比
+        unit: ratio
+        op: ">="
+        value: null
+        advice: 核对实际开口面积、周长、钢网厚度和脱模能力。
+      - id: SMT-PRINT-BUDGET
+        field: allowable_print_offset
+        label: 设计允许印刷对位误差
+        unit: um
+        op: ">="
+        value: null
+        note: value填写厂商保证的对位误差上限；设计允许误差应不小于该能力。
+        severity: high
+        advice: 复核PCB焊盘与钢网开口公差及印刷设备能力。
+      - id: SMT-PRINT-MEASURED
+        field: measured_print_offset
+        label: 实测印刷偏移绝对值
+        scope: process
+        unit: um
+        op: "<="
+        value: null
+        severity: high
+        advice: 核对Mark识别、板支撑、钢网定位及设备校准。

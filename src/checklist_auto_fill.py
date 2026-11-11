@@ -1,342 +1,197 @@
-"""
-BRD-AI: Checklist自动填写引擎
-读取Layout_Checklist.xlsx，根据BRD分析结果自动填写Check和Approved列
+"""Checklist 自动填写: 读取模板 -> 按规则判定 -> 写回 Check/签核/原因说明.
+
+模板结构由 checklist_template 识别 (列名别名), 判定由 checklist_auto_rules 完成
+(按条目文字匹配, 不依赖序号), 所以换一版 checklist.xlsx 通常不用改代码。
 """
 import os
-import re
-import copy 
 from datetime import datetime
-from typing import Dict, Any, List, Optional, Tuple
 
 import openpyxl
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
-#通过浅绿色，红色，黄色，蓝色，灰色填充单元格来表示不同的检查结果
-#浅蓝灰色，需要人工确认
-PASS_FILL = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid") 
+from src.checklist_auto_rules import (MANUAL, NA, VERIFY, build_facts, evaluate,
+                                      load_rules, match_rule)
+from src.checklist_template import load_config, read_template
+
+PASS_FILL = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
 FAIL_FILL = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
 WARN_FILL = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
 MANUAL_FILL = PatternFill(start_color="D9E2F3", end_color="D9E2F3", fill_type="solid")
 NA_FILL = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
-HEADER_FILL = PatternFill(start_color="2F5496", end_color="2F5496", fill_type="solid")
 
 THIN_BORDER = Border(
-    left=Side(style="thin"), right=Side(style="thin"),  
+    left=Side(style="thin"), right=Side(style="thin"),
     top=Side(style="thin"), bottom=Side(style="thin"),
 )
-# 字典，自动校验规则
-VERIFIABLE_RULES = {
-    37: {"category": "constraint", "desc": "设计约束规则已在Constraint Manager中设置",
-         "check": lambda r: ("auto_pass", "由BRD-AI自动生成约束规则")},
-    38: {"category": "constraint", "desc": "间距规则",
-         "check": lambda r: ("auto_pass", "间距规则已通过DFM校验")},
-    39: {"category": "constraint", "desc": "SMD到连接器间距",
-         "check": lambda r: ("auto_pass", "规则已纳入Spacing Constraint")},
-    40: {"category": "constraint", "desc": "物理/电气规则",
-         "check": lambda r: ("auto_pass", "Power Net和GND约束已设置")},
-    41: {"category": "constraint", "desc": "层叠结构",
-         "check": lambda r: ("auto_pass", "8层板, Stackup已确认")},
-    42: {"category": "constraint", "desc": "差分信号阻抗",
-         "check": lambda r: ("auto_pass", "差分对阻抗已计算并设置")},
-    43: {"category": "constraint", "desc": "测试点",
-         "check": lambda r: ("auto_pass", "测试点规则已纳入约束")},
-    46: {"category": "high_speed", "desc": "高速信号阻抗一致性",
-         "check": lambda r: ("auto_pass", "阻抗规则已应用于所有层")},
-    47: {"category": "high_speed", "desc": "高速差分对",
-         "check": lambda r: ("auto_pass", "差分对已自动识别并设置等长规则")},
-    48: {"category": "high_speed", "desc": "3W原则",
-         "check": lambda r: ("auto_pass", "3W间距规则已设置")},
-    49: {"category": "high_speed", "desc": "高速走线参考平面",
-         "check": lambda r: ("auto_pass", "参考完整GND/Power平面")},
-    50: {"category": "high_speed", "desc": "电容扇出",
-         "check": lambda r: ("auto_pass", "最小回路面积规则已设置")},
-    54: {"category": "high_speed", "desc": "SI约束",
-         "check": lambda r: ("auto_pass", "差分对/高速/BUS SI约束已设置")},
-    63: {"category": "high_speed", "desc": "蛇形线间距",
-         "check": lambda r: ("auto_pass", "3W/5W蛇形线间距规则已设置")},
-    73: {"category": "emc", "desc": "走线角度",
-         "check": lambda r: ("auto_pass", "135°走线, RF弧形走线")},
-    84: {"category": "power", "desc": "电源/GND载流",
-         "check": lambda r: ("auto_pass", "1A/mm outer, 0.5A/mm inner")},
-    85: {"category": "power", "desc": "20H原则",
-         "check": lambda r: ("auto_pass", "电源层缩进地层")},
-    86: {"category": "power", "desc": "不同电源平面",
-         "check": lambda r: ("auto_pass", "相邻不同电源平面避免重叠")},
-    93: {"category": "keepout", "desc": "散热焊盘下方",
-         "check": lambda r: ("auto_pass", "禁布区规则已设置")},
-    94: {"category": "keepout", "desc": "安装孔周围",
-         "check": lambda r: ("auto_pass", "≥4mm间距已设置")},
-    95: {"category": "keepout", "desc": "NTH到铜皮",
-         "check": lambda r: ("auto_pass", "内层≥0.5mm, 外层≥0.3mm")},
-    98: {"category": "keepout", "desc": "外层铜皮到板边",
-         "check": lambda r: ("auto_pass", "≥0.3mm")},
-    99: {"category": "keepout", "desc": "内层铜皮到板边",
-         "check": lambda r: ("auto_pass", "≥0.5mm")},
-    100: {"category": "route", "desc": "0402及以下出线",
-         "check": lambda r: ("auto_pass", "十字连接")},
-    101: {"category": "route", "desc": "SOIC/PLCC/QFP/SOT出线",
-         "check": lambda r: ("auto_pass", "从引脚长边出线")},
-    112: {"category": "via", "desc": "回流焊盘无过孔",
-         "check": lambda r: ("auto_pass", "孔盘≥0.5mm, 绿油≥0.1mm")},
-    113: {"category": "via", "desc": "过孔不过密",
-         "check": lambda r: ("auto_pass", "不破坏电源/GND平面完整性")},
-    117: {"category": "testpoint", "desc": "测试点直径",
-         "check": lambda r: ("auto_pass", "≥0.8mm, 边到边≥0.47mm")},
-    118: {"category": "testpoint", "desc": "测试点到器件焊盘",
-         "check": lambda r: ("auto_pass", "间距规则已设置")},
-    119: {"category": "testpoint", "desc": "测试点到板边/定位孔",
-         "check": lambda r: ("auto_pass", "≥2.5mm/≥5mm")},
-    125: {"category": "drc", "desc": "所有DRC",
-         "check": lambda r: ("auto_verify", "需在Allegro中运行DRC检查")},
-}
 
-MANUAL_REQUIRED = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 16, 17,
-                   18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
-                   31, 32, 33, 34, 35, 36,
-                   44, 45, 51, 52, 53, 55, 56, 57, 58, 59, 60, 61, 62,
-                   64, 65, 66, 67, 68, 69, 70, 71,
-                   72, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83,
-                   87, 88, 89, 90, 91, 92,
-                   96, 97, 102,
-                   103, 104, 105, 106, 107, 108,
-                   109, 110, 111,
-                   114, 115, 116,
-                   120, 121, 122, 123, 124,
-                   126, 127,
-                   128, 129, 130, 131,
-                   132, 133, 134, 135}
+STATUS_TEXT = {"PASS": "PASS", "FAIL": "FAIL", VERIFY: "VERIFY", MANUAL: "MANUAL", NA: "N/A"}
+STATUS_FILL = {"PASS": PASS_FILL, "FAIL": FAIL_FILL, VERIFY: WARN_FILL,
+               MANUAL: MANUAL_FILL, NA: NA_FILL}
 
 
-def _read_checklist_rows(excel_path: str) -> List[dict]:
-    wb = openpyxl.load_workbook(excel_path, data_only=True) # 打开Excel文件，data_only=True表示读取公式计算后的值
-    sheet_names = [s.lower() for s in wb.sheetnames] # 获取所有工作表名称并转换为小写
-    sheet_name = "check list" if "check list" in sheet_names else wb.sheetnames[-1]  # 如果存在名为"check list"的工作表，则使用它，否则使用最后一个工作表
-    ws = wb[sheet_name] # 获取指定工作表对象
-    wb.close() 
-
-    header_row = 3 #头
-    rows = [] #行
-    current_category = ""  #当前类别
-    current_subcategory = "" #当前子类别
-
-    for row_idx in range(header_row + 1, ws.max_row + 1):   #遍历每一行，从header_row+1开始到最大行数
-        no_val = ws.cell(row_idx, 3).value  #3列（序号列）的值
-        if no_val is None:  #不存在就结束
+def decide_items(template: dict, facts: dict, rules: list) -> list:
+    """对每条检查项给出结论, 不改工作簿。"""
+    decisions = []
+    for item in template["items"]:
+        rule = match_rule(item["item"], item["category"], rules)
+        if rule is None:
+            decisions.append({
+                "row": item["row"], "no": item["no"], "category": item["category"],
+                "item": item["item"], "grade_type": item["grade_type"],
+                "status": MANUAL, "rule_id": "", "rule_name": "",
+                "reason": "规则库未覆盖该条目, 需人工确认 (可在 config/checklist_auto_rules.yaml 增加规则)",
+            })
             continue
-
-        cat_text = str(ws.cell(row_idx, 1).value or "") # 1列（类别列）的值
-        if cat_text.strip(): # 如果类别列不为空，则更新当前类别
-            current_category = cat_text.strip() # 当前类别
-
-        sub_text = str(ws.cell(row_idx, 2).value or "") # 以此类推
-        if sub_text.strip():  
-            current_subcategory = sub_text.strip()
-# 检查，ValueError "abc"字符串无法转数字，“12a3” TypeError None无法 调整类型
-        try:  
-            item_no = int(no_val)
-        except (ValueError, TypeError):
-            continue
-
-        grade = str(ws.cell(row_idx, 4).value or "").strip()  #类推
-        item_text = str(ws.cell(row_idx, 5).value or "").strip()
-        standard = str(ws.cell(row_idx, 6).value or "").strip()
-        note = str(ws.cell(row_idx, 7).value or "").strip()
-        check_val = str(ws.cell(row_idx, 8).value or "").strip()
-        approved_val = str(ws.cell(row_idx, 9).value or "").strip()
-
-        grade_type = "mandatory"
-        if "推荐" in grade or "Recommend" in grade:
-            grade_type = "recommend"
-        elif "提示" in grade or "Remind" in grade:
-            grade_type = "remind"
-
-        rows.append({
-            "row_idx": row_idx,
-            "no": item_no,
-            "category": current_category,
-            "subcategory": current_subcategory,
-            "grade": grade,
-            "grade_type": grade_type,
-            "items": item_text,
-            "standard": standard,
-            "note": note,
-            "check": check_val if check_val and check_val != "None" else "",
-            "approved": approved_val if approved_val and approved_val != "None" else "",
+        verdict = evaluate(rule, facts)
+        decisions.append({
+            "row": item["row"], "no": item["no"], "category": item["category"],
+            "item": item["item"], "grade_type": item["grade_type"],
+            "status": verdict["status"], "rule_id": verdict["rule_id"],
+            "rule_name": verdict["rule_name"], "reason": verdict["reason"],
         })
-
-    return rows
-
-
-def _determine_check_result(item: dict, brd_info: dict, analysis_result: dict) -> Tuple[str, str, str]:
-    item_no = item["no"] 
-    standard = item["standard"] 
-    grade_type = item["grade_type"]
-    item_text = item["items"]
-
-    if standard.upper() == "NA":
-        return ("N/A", "不适用", "N/A")
-
-    if item_no in VERIFIABLE_RULES:
-        rule = VERIFIABLE_RULES[item_no]
-        result, detail = rule["check"](analysis_result)
-        return (result, detail, "auto")
-
-    if item_no in MANUAL_REQUIRED:
-        if standard.upper() == "OK":
-            return ("手动检查", "需人工确认: " + item_text[:60], "manual")
-        return ("手动检查", "Meeting standard待确认: " + standard[:60], "manual")
-
-    if standard.upper() == "OK":
-        return ("OK", "标准已满足", "auto_pass")
-
-    return ("手动检查", "需人工确认", "manual")
+    return decisions
 
 
-def _analyze_brd_for_checklist(brd_info: dict, classification: dict,
-                                constraints: dict, dfm_result: dict) -> dict:
-    return {
-        "board_name": brd_info.get("board_name", ""),
-        "net_count": brd_info.get("net_count", 0),
-        "layer_count": brd_info.get("layer_count", 0),
-        "net_classes": classification.get("total_classes", 0),
-        "diff_pairs": classification.get("total_diff_pairs", 0),
-        "physical_constraints": len(constraints.get("physical_constraints", [])),
-        "spacing_constraints": len(constraints.get("spacing_constraints", [])),
-        "electrical_constraints": len(constraints.get("electrical_constraints", [])),
-        "dfm_passed": dfm_result.get("passed", False),
-        "dfm_errors": dfm_result.get("error_count", 0),
-        "dfm_warnings": dfm_result.get("warning_count", 0),
-        "layers": brd_info.get("layers", []),
-        "power_nets": brd_info.get("power_nets", []),
-    }
-
-
-def auto_fill_checklist(
-    checklist_path: str,
-    brd_info: dict,
-    classification: dict,
-    constraints: dict,
-    dfm_result: dict,
-    output_path: str,
-    checker_name: str = "BRD-AI",
-    static_approver: str = "",
-) -> str:
-    rows = _read_checklist_rows(checklist_path)
-    analysis = _analyze_brd_for_checklist(brd_info, classification, constraints, dfm_result)
-
-    wb = openpyxl.load_workbook(checklist_path)
-    sheet_names = [s.lower() for s in wb.sheetnames]
-    sheet_name = "check list" if "check list" in sheet_names else wb.sheetnames[-1]
-    ws = wb[sheet_name]
-
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-    stats = {"auto_pass": 0, "auto_verify": 0, "manual": 0, "na": 0, "total": 0}
-
-    for item in rows:
-        item_no = item["no"]
-        row_idx = item["row_idx"]
-        result, detail, method = _determine_check_result(item, brd_info, analysis)
-
-        if result == "OK" or result == "auto_pass":
-            check_text = "PASS"
-            fill = PASS_FILL
+def _stats(decisions: list, rules_hit: set) -> dict:
+    stats = {"total": len(decisions), "auto_pass": 0, "auto_fail": 0,
+             "auto_verify": 0, "manual": 0, "na": 0, "unmatched": 0,
+             "rule_matched": len(rules_hit)}
+    for decision in decisions:
+        status = decision["status"]
+        if status == "PASS":
             stats["auto_pass"] += 1
-        elif result == "auto_verify":
-            check_text = "VERIFY"
-            fill = WARN_FILL
+        elif status == "FAIL":
+            stats["auto_fail"] += 1
+        elif status == VERIFY:
             stats["auto_verify"] += 1
-        elif result == "N/A":
-            check_text = "N/A"
-            fill = NA_FILL
+        elif status == NA:
             stats["na"] += 1
         else:
-            check_text = "MANUAL"
-            fill = MANUAL_FILL
             stats["manual"] += 1
+        if not decision["rule_id"]:
+            stats["unmatched"] += 1
+    return stats
 
-        approved_text = f"{checker_name} / {timestamp}" if not static_approver else static_approver
 
-        cell_check = ws.cell(row_idx, 8)
-        if not cell_check.value or str(cell_check.value).strip() in ("", "None"):
-            cell_check.value = check_text
-            cell_check.fill = fill
-            cell_check.font = Font(name="Arial", size=10, bold=True)
-            cell_check.alignment = Alignment(horizontal="center", vertical="center")
-            cell_check.border = THIN_BORDER
+def _append_note(cell, reason: str, tag: str = ""):
+    if not reason:
+        return
+    existing = str(cell.value or "").strip()
+    if tag:
+        reason = f"{tag} {reason}"
+    if not existing or existing.lower() == "none":
+        cell.value = reason
+    elif reason not in existing:
+        cell.value = f"{existing}; {reason}"
 
-        cell_approved = ws.cell(row_idx, 9)
-        if not cell_approved.value or str(cell_approved.value).strip() in ("", "None"):
-            cell_approved.value = approved_text
-            cell_approved.font = Font(name="Arial", size=9)
-            cell_approved.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            cell_approved.border = THIN_BORDER
 
-        note_col = ws.cell(row_idx, 7)
-        if detail and detail != "标准已满足":
-            existing_note = str(note_col.value or "")
-            if existing_note and existing_note != "None":
-                if detail not in existing_note:
-                    note_col.value = f"{existing_note}; {detail}"
-            else:
-                note_col.value = detail
+def fill_checklist(template: dict, facts: dict, output_path: str,
+                   checker_name: str = "BRD-AI", static_approver: str = "",
+                   rules: list = None, config: dict = None) -> dict:
+    """按判定结果写回 checklist 并另存; 返回结果明细 (供报告使用)。"""
+    config = config or load_config()
+    rules = rules if rules is not None else load_rules(config)
+    decisions = decide_items(template, facts, rules)
+    stats = _stats(decisions, {d["rule_id"] for d in decisions if d["rule_id"]})
 
-        stats["total"] += 1
+    wb = openpyxl.load_workbook(template["path"])
+    ws = wb[template["sheet"]]
+    cols = template["columns"]
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    approver = static_approver or f"{checker_name} / {timestamp}"
 
-    # Add summary sheet
-    if "summary" in [s.lower() for s in wb.sheetnames]:
-        summary_ws = wb["summary"]
-    else:
-        summary_ws = wb.create_sheet("summary")
+    check_col = cols.get("check")
+    approved_col = cols.get("approved")
+    note_col = cols.get("note")
 
-    last_rev_row = 1
-    for r in range(1, summary_ws.max_row + 1):
-        if summary_ws.cell(r, 1).value and "Date" in str(summary_ws.cell(r, 1).value):
-            last_rev_row = r
-    last_rev_row = max(last_rev_row, summary_ws.max_row)
+    for decision in decisions:
+        row = decision["row"]
+        status = decision["status"]
+        if check_col:
+            cell = ws.cell(row, check_col)
+            if not str(cell.value or "").strip():
+                cell.value = STATUS_TEXT.get(status, "MANUAL")
+                cell.fill = STATUS_FILL.get(status, MANUAL_FILL)
+                cell.font = Font(name="Arial", size=10, bold=True)
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                cell.border = THIN_BORDER
+        if approved_col:
+            cell = ws.cell(row, approved_col)
+            if not str(cell.value or "").strip():
+                cell.value = approver
+                cell.font = Font(name="Arial", size=9)
+                cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                cell.border = THIN_BORDER
+        if note_col:
+            tag = {"PASS": "[自动]", "FAIL": "[不符合]", VERIFY: "[待验证]",
+                   NA: "[不适用]"}.get(status, "[人工]")
+            _append_note(ws.cell(row, note_col), decision["reason"], tag)
 
-    new_row = last_rev_row + 2
-    summary_ws.cell(new_row, 1, value=timestamp).font = Font(name="Arial", size=10)
-    summary_ws.cell(new_row, 2, value="Auto").font = Font(name="Arial", size=10)
-    summary_ws.cell(new_row, 3, value=checker_name).font = Font(name="Arial", size=10)
-    summary_ws.cell(new_row, 4, value=f"Auto-fill: {stats['auto_pass']}PASS/{stats['manual']}MANUAL/{stats['na']}NA/{stats['total']}TOTAL").font = Font(name="Arial", size=10)
+    # summary 页追加一行填写记录
+    summary_name = next((s for s in wb.sheetnames if s.lower() == "summary"), None)
+    summary_ws = wb[summary_name] if summary_name else wb.create_sheet("summary")
+    last_row = summary_ws.max_row or 1
+    if summary_ws.cell(last_row, 1).value:
+        last_row += 1
+    summary_ws.cell(last_row, 1, value=timestamp).font = Font(name="Arial", size=10)
+    summary_ws.cell(last_row, 2, value="Auto").font = Font(name="Arial", size=10)
+    summary_ws.cell(last_row, 3, value=checker_name).font = Font(name="Arial", size=10)
+    summary_ws.cell(last_row, 4, value=(
+        f"Checklist: {stats['total']} 项, PASS {stats['auto_pass']}, "
+        f"VERIFY {stats['auto_verify']}, FAIL {stats['auto_fail']}, "
+        f"MANUAL {stats['manual']}, N/A {stats['na']}"
+    )).font = Font(name="Arial", size=10)
 
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    out_dir = os.path.dirname(os.path.abspath(output_path))
+    os.makedirs(out_dir, exist_ok=True)
     wb.save(output_path)
     wb.close()
 
+    return {
+        "template": {k: template[k] for k in
+                     ("path", "sheet", "header_row", "columns", "column_headers",
+                      "method", "count", "warnings")},
+        "decisions": decisions,
+        "stats": stats,
+        "checker": checker_name,
+        "timestamp": timestamp,
+        "filled": output_path,
+    }
+
+
+# --------------------------------------------------------------------------- 兼容旧接口
+def auto_fill_checklist(checklist_path: str, brd_info: dict, classification: dict,
+                        constraints: dict, dfm_result: dict, output_path: str,
+                        checker_name: str = "BRD-AI", static_approver: str = "") -> tuple:
+    """旧接口: 保持命令行流水线可用; 内部改用模板识别 + 内容规则。"""
+    template = read_template(checklist_path)
+    facts = build_facts({}, classification, constraints, dfm_result, brd_info)
+    result = fill_checklist(template, facts, output_path, checker_name, static_approver)
+    stats = dict(result["stats"])
+    stats.setdefault("auto_verify", 0)
     return output_path, stats
 
 
 def generate_checklist_summary(stats: dict, output_path: str) -> str:
-    lines = []
-    lines.append("=" * 60)
-    lines.append("  BRD-AI: Checklist Auto-Fill Summary")
-    lines.append("=" * 60)
-    lines.append(f"  Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    lines.append("=" * 60)
-    lines.append("")
-    lines.append(f"  Total Items:    {stats['total']}")
-    lines.append(f"  Auto PASS:      {stats['auto_pass']}  (自动验证通过)")
-    lines.append(f"  Auto VERIFY:    {stats['auto_verify']}  (需DRC确认)")
-    lines.append(f"  Manual Check:   {stats['manual']}  (需人工检查)")
-    lines.append(f"  N/A:            {stats['na']}  (不适用)")
-    lines.append("")
-    lines.append(f"  Auto Rate: {stats['auto_pass']/max(stats['total'],1)*100:.1f}%")
-    lines.append("")
-    lines.append("=" * 60)
-
-    auto_rate = stats['auto_pass'] / max(stats['total'], 1) * 100
-    lines.append(f"  自动完成率: {auto_rate:.1f}%")
-    lines.append("")
-    lines.append(f"  AUTO_PASS - 已由BRD-AI自动验证通过")
-    lines.append(f"  VERIFY    - 需要在Allegro中运行DRC确认")
-    lines.append(f"  MANUAL    - 需要人工目视/手动检查")
-    lines.append(f"  N/A       - 不适用")
-    lines.append("=" * 60)
-
-    content = "\n".join(lines)
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    """旧接口: 纯文本摘要 (新报告请用 src.checklist_report)。"""
+    auto_rate = stats.get("auto_pass", 0) / max(stats.get("total", 0), 1) * 100
+    lines = [
+        "=" * 60,
+        "  BRD-AI: Checklist Auto-Fill Summary",
+        "=" * 60,
+        f"  Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "=" * 60,
+        "",
+        f"  Total Items:    {stats.get('total', 0)}",
+        f"  Auto PASS:      {stats.get('auto_pass', 0)}  (自动判定通过)",
+        f"  Auto FAIL:      {stats.get('auto_fail', 0)}  (判定不符合)",
+        f"  Manual Check:   {stats.get('manual', 0)}  (需人工检查)",
+        f"  N/A:            {stats.get('na', 0)}  (不适用)",
+        "",
+        f"  自动完成率: {auto_rate:.1f}%",
+        "=" * 60,
+    ]
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
-        f.write(content)
+        f.write("\n".join(lines))
     return output_path

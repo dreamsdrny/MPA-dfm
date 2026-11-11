@@ -15,6 +15,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
+from src.brd_components import component_summary_line
+
 MIL_TO_MM = 0.0254
 
 DEFAULT_FACTORY = "hongban"
@@ -192,6 +194,70 @@ def get_sm_bridge_capability(capability: dict, copper_oz: float = 1.0) -> Option
 # ============================================================
 # DFM 功能分析: 设计参数 -> 制程能力比对
 # ============================================================
+# 判定所需的输入项; 缺一项就意味着对应检查跑不了, 报告必须显式说明而不是静默跳过
+COVERAGE_ITEMS = [
+    ("最小线宽", "min_line_width"),
+    ("最小线距", "min_spacing"),
+    ("最小机械钻孔", "min_mech_drill"),
+    ("单边孔环", "min_annular_ring"),
+    ("板厚(纵横比)", "board_thickness"),
+    ("阻焊桥", "solder_mask_bridge"),
+    ("阻焊开窗", "solder_mask_opening"),
+    ("丝印线宽", "silkscreen_width"),
+    ("丝印间隙", "silkscreen_clearance"),
+    ("器件间距", "min_component_spacing"),
+    ("基准点", "fiducial_count_top"),
+    ("器件到板边", "component_to_edge"),
+    ("测试点", "test_pad_diameter"),
+    ("工艺边", "process_edge_mm"),
+    ("Mark点", "mark_count"),
+]
+
+FLEX_COVERAGE_ITEMS = [
+    ("覆盖膜开窗间距", "coverlay_spacing"),
+    ("开窗到焊盘", "coverlay_to_pad"),
+    ("开窗到线路", "coverlay_to_trace"),
+]
+
+
+def compute_coverage(design: dict, board_type: str = "rigid") -> dict:
+    """统计「本可以检查」与「因缺数据未检查」的项, 给报告一个覆盖率的说法。"""
+    items = list(COVERAGE_ITEMS)
+    if board_type == "flex":
+        items += FLEX_COVERAGE_ITEMS
+    elif design.get("coverlay_spacing") is not None:
+        items += FLEX_COVERAGE_ITEMS
+
+    checked, missing = [], []
+    for label, key in items:
+        val = design.get(key)
+        if key in ("panel_size", "panel_size_x"):
+            val = design.get("panel_size") or design.get("panel_size_x")
+        if val is None or (isinstance(val, str) and not val.strip()):
+            missing.append(label)
+        else:
+            checked.append(label)
+
+    total = len(items)
+    ratio = round(len(checked) / total, 2) if total else 0.0
+    if ratio >= 0.75:
+        level = "高"
+    elif ratio >= 0.5:
+        level = "中"
+    else:
+        level = "低"
+    return {
+        "checked": len(checked),
+        "total": total,
+        "ratio": ratio,
+        "level": level,
+        "checked_items": checked,
+        "missing_items": missing,
+        "note": f"共 {total} 项关键输入, 已具备 {len(checked)} 项"
+                + (f"; 缺: {'、'.join(missing)}" if missing else ""),
+    }
+
+
 def analyze_design(design: dict, board_type: str = "rigid",
                    capability_level: str = "standard",
                    factory: str = DEFAULT_FACTORY) -> dict:
@@ -222,21 +288,37 @@ def analyze_design(design: dict, board_type: str = "rigid",
     factory = normalize_factory(factory)
     capability = load_capability(board_type, capability_level, factory=factory)
     level = normalize_level(capability_level)
-    copper_um = _num(design.get("copper_um")) or 35.0
-    copper_oz = _num(design.get("copper_oz")) or max(1.0, round(copper_um / 35.0, 1))
+    # 铜厚: 界面只让填 oz; um 没给时按 1oz=35um 换算, 避免两个输入打架
+    copper_oz_in = _num(design.get("copper_oz"))
+    copper_um = _num(design.get("copper_um"))
+    if copper_um is None:
+        copper_um = round(copper_oz_in * 35.0, 1) if copper_oz_in else 35.0
+    copper_oz = copper_oz_in or max(1.0, round(copper_um / 35.0, 1))
 
     items: List[dict] = []
+    sources = design.get("_sources") or {}
+
+    def source_of(field: Optional[str]) -> Tuple[str, str]:
+        """返回 (短来源, 出处说明): BRD 读到的标 BRD, 其余都是人工值。"""
+        if not field:
+            return "手工", ""
+        meta = sources.get(field) or {}
+        detail = meta.get("source") or ""
+        return ("BRD", detail) if meta else ("手工", detail)
 
     def add_check(category: str, name: str, design_val: Optional[float],
                   cap_val: Optional[float], unit: str = "mm",
-                  higher_is_better: bool = False, note: str = ""):
+                  higher_is_better: bool = False, note: str = "",
+                  field: Optional[str] = None):
         if design_val is None:
             return
+        src, src_detail = source_of(field)
         if cap_val is None:
             items.append({
                 "category": category, "item": name, "design": design_val,
                 "capability": None, "unit": unit, "status": "info",
                 "message": f"{name}: 该等级无制程数据，需与板厂评估", "note": note,
+                "field": field, "source": src, "source_detail": src_detail,
             })
             return
         cap_val = round(cap_val, 4)
@@ -253,14 +335,20 @@ def analyze_design(design: dict, board_type: str = "rigid",
                 "category": category, "item": name, "design": design_val,
                 "capability": cap_val, "unit": unit, "status": status,
                 "message": message, "note": note,
+                "field": field, "source": src, "source_detail": src_detail,
             })
         else:
-            direction = "≥" if higher_is_better else "≤"
+            # 要比的方向说清楚: 要求"不小于"却不够, 叫低于下限; 要求"不大于"却超了, 叫超上限
+            if higher_is_better:
+                message = f"{name}: 设计 {design_val}{unit} 低于制程能力下限 ≥{cap_val}{unit}"
+            else:
+                message = f"{name}: 设计 {design_val}{unit} 超过制程能力上限 ≤{cap_val}{unit}"
             items.append({
                 "category": category, "item": name, "design": design_val,
                 "capability": cap_val, "unit": unit, "status": "fail",
-                "message": f"{name}: 设计 {design_val}{unit} 超出制程能力 {direction}{cap_val}{unit}",
+                "message": message,
                 "note": note,
+                "field": field, "source": src, "source_detail": src_detail,
             })
 
     trace = capability.get("trace", {})
@@ -285,6 +373,7 @@ def analyze_design(design: dict, board_type: str = "rigid",
             "unit": "mm", "status": "pass" if ok else "fail",
             "message": f"板尺寸 {bs[0]}x{bs[1]}mm {'满足' if ok else '超出'}最大拼板 {wx}x{wy}mm",
             "note": panel.get("max_working_panel", {}).get("note", ""),
+            "field": "board_size",
         })
 
     # ---- 板厚范围 ----
@@ -299,45 +388,110 @@ def analyze_design(design: dict, board_type: str = "rigid",
             "unit": "mm", "status": "pass" if ok else "fail",
             "message": f"板厚 {board_thickness}mm {'在' if ok else '不在'}能力范围 {bt_min}-{bt_max}mm",
             "note": bt_range.get("note", ""),
+            "field": "board_thickness",
+        })
+    elif board_thickness:
+        src = ((design.get("_sources") or {}).get("board_thickness")
+               or (design.get("_sources") or {}).get("board_thickness_mm") or {})
+        items.append({
+            "category": "压合", "item": "板厚",
+            "design": board_thickness, "capability": None, "unit": "mm",
+            "status": "info",
+            "message": (f"板厚 {board_thickness}mm (来源: {src.get('source', 'BRD/手工')}，"
+                        f"置信度 {src.get('confidence', '-')}); 能力库没给板厚范围，"
+                        f"需与板厂确认压合范围"),
+            "note": "板厚从 BRD 制程说明文本读, 只有一句说明时置信度低; 成品板厚要跟板厂叠层确认",
+            "field": "board_thickness",
         })
 
     # ---- 线路 ----
     line_cap_um, space_cap_um = get_line_spacing_capability(capability, copper_um)
     add_check("线路", "最小线宽", _num(design.get("min_line_width")),
               None if line_cap_um is None else line_cap_um / 1000.0, "mm",
-              higher_is_better=True, note=f"成品铜厚 {copper_um}um")
+              higher_is_better=True, note=f"成品铜厚 {copper_um}um",
+              field="min_line_width")
     add_check("线路", "最小线距", _num(design.get("min_spacing")),
               None if space_cap_um is None else space_cap_um / 1000.0, "mm",
-              higher_is_better=True, note=f"成品铜厚 {copper_um}um")
+              higher_is_better=True, note=f"成品铜厚 {copper_um}um",
+              field="min_spacing")
+
+    # 颈宽: 约束库里没有独立项, 按最小线宽能力评估, 只作提示不直接判 FAIL
+    neck = _num(design.get("min_neck_width"))
+    if neck is not None:
+        line_cap_mm = None if line_cap_um is None else round(line_cap_um / 1000.0, 4)
+        if line_cap_mm is not None and neck < line_cap_mm:
+            neck_msg = (f"最小颈宽: 设计 {neck}mm 小于最小线宽能力 {line_cap_mm}mm, "
+                        "窄颈位置请与板厂确认")
+        else:
+            neck_msg = f"最小颈宽: 设计 {neck}mm, 不小于最小线宽能力 {line_cap_mm}mm"
+        src, src_detail = source_of("min_neck_width")
+        items.append({
+            "category": "线路", "item": "最小颈宽", "design": neck,
+            "capability": line_cap_mm, "unit": "mm", "status": "info",
+            "message": neck_msg, "note": "颈宽按最小线宽口径评估, 不单独判 FAIL",
+            "field": "min_neck_width", "source": src, "source_detail": src_detail,
+        })
 
     h2h = trace.get("hole_to_hole_spacing", {})
     add_check("线路", "不同网络孔壁间距", _num(design.get("pth_to_pth_spacing")),
               _num((h2h.get("pth_to_pth") or {}).get("value")), "mm",
-              higher_is_better=True, note="涉及CAF问题")
+              higher_is_better=True, note="涉及CAF问题",
+              field="pth_to_pth_spacing")
 
     tbe = trace.get("trace_to_board_edge", {})
     add_check("线路", "内层线路到板边", _num(design.get("copper_to_edge_inner")),
-              _num(tbe.get("inner")), "mm", higher_is_better=True)
+              _num(tbe.get("inner")), "mm", higher_is_better=True,
+              field="copper_to_edge_inner")
     add_check("线路", "外层线路到板边", _num(design.get("copper_to_edge_outer")),
-              _num(tbe.get("outer")), "mm", higher_is_better=True)
+              _num(tbe.get("outer")), "mm", higher_is_better=True,
+              field="copper_to_edge_outer")
 
     # ---- 钻孔 ----
     add_check("钻孔", "最小机械钻孔", _num(design.get("min_mech_drill")),
               _num(drill.get("min_mech_drill", {}).get("value")), "mm",
               higher_is_better=True,
-              note="软板" if board_type == "flex" else "硬板")
+              note="软板" if board_type == "flex" else "硬板",
+              field="min_mech_drill")
     add_check("钻孔", "最大机械钻孔", _num(design.get("max_mech_drill")),
-              _num(drill.get("max_mech_drill", {}).get("value")), "mm")
+              _num(drill.get("max_mech_drill", {}).get("value")), "mm",
+              field="max_mech_drill")
 
     min_laser = _num(drill.get("min_laser_via", {}).get("value"))
     if min_laser is not None:
         add_check("钻孔", "最小激光孔", _num(design.get("min_laser_via")),
-                  min_laser / 1000.0, "mm", higher_is_better=True)
+                  min_laser / 1000.0, "mm", higher_is_better=True,
+                  field="min_laser_via")
 
     ann_mech_mm = _to_mm(drill.get("annular_ring_mech"))
     add_check("钻孔", "单边孔环(机械孔)", _num(design.get("min_annular_ring")),
               ann_mech_mm, "mm", higher_is_better=True,
-              note=drill.get("annular_ring_mech", {}).get("note", ""))
+              note=drill.get("annular_ring_mech", {}).get("note", ""),
+              field="min_annular_ring")
+
+    ann_laser_mm = _to_mm(drill.get("annular_ring_laser"))
+    add_check("钻孔", "单边孔环(激光/盲埋孔)", _num(design.get("min_annular_ring_laser")),
+              ann_laser_mm, "mm", higher_is_better=True,
+              note=drill.get("annular_ring_laser", {}).get("note", ""),
+              field="min_annular_ring_laser")
+
+    # 焊盘栈的孔型分不清时 (同孔径既做通孔又做盲埋孔, 或该孔径不在钻孔表),
+    # 不硬塞进机械孔/激光孔任何一行, 单列出来让人确认。
+    unknown_vias = design.get("_via_kind_unknown") or []
+    if unknown_vias:
+        rings = [v.get("annular_ring_mm") for v in unknown_vias
+                 if isinstance(v.get("annular_ring_mm"), (int, float))]
+        detail = "；".join(
+            f"{v.get('name')} 钻{v.get('drill_mm')}/盘{v.get('pad_mm')} 孔环{v.get('annular_ring_mm')}"
+            for v in unknown_vias[:4])
+        items.append({
+            "category": "钻孔", "item": "单边孔环(孔型待确认)",
+            "design": min(rings) if rings else None,
+            "capability": ann_mech_mm, "unit": "mm", "status": "info",
+            "message": (f"{len(unknown_vias)} 个焊盘栈判不出是通孔还是盲埋孔, 未参与自动判定: {detail}"
+                        f"；若其中是通孔, 需与机械孔能力 {ann_mech_mm}mm 比"),
+            "note": "按焊盘栈名称的跨层标记、孔径, 以及钻孔表里该孔径只出现在哪种跨度来判型",
+            "field": "min_annular_ring",
+        })
 
     # ---- 纵横比 ----
     ar_drill = _num(design.get("min_drill_for_ar")) or _num(design.get("min_mech_drill"))
@@ -350,6 +504,7 @@ def analyze_design(design: dict, board_type: str = "rigid",
                 "unit": ":1", "status": "info",
                 "message": f"PTH纵横比能力数据存疑({pth_ar:.0f}:1)，请与板厂确认",
                 "note": plating.get("pth_aspect_ratio", {}).get("note", ""),
+                "field": "min_drill_for_ar",
             })
         else:
             ar = board_thickness / ar_drill
@@ -368,20 +523,103 @@ def analyze_design(design: dict, board_type: str = "rigid",
                 "status": status,
                 "message": ar_msg,
                 "note": plating.get("pth_aspect_ratio", {}).get("note", ""),
+                "field": "min_drill_for_ar",
             })
 
-    add_check("钻孔", "NPTH孔到板边", _num(design.get("npth_to_edge")),
-              _num(drill.get("npth_to_edge", {}).get("value")), "mm",
-              higher_is_better=True, note="孔壁到板边，太小有破孔风险")
+    # ---- 器件清单 (Part.xml 位号) ----
+    comps = design.get("_components") or {}
+    if comps:
+        if comps.get("ok"):
+            sample = "、".join(comps["refdes"][:8]) + ("…" if comps["count"] > 8 else "")
+            items.append({
+                "category": "板信息", "item": "器件数量",
+                "design": comps["count"], "capability": None, "unit": "个",
+                "status": "info",
+                "message": component_summary_line(comps) + f"；位号: {sample}",
+                "note": "位号与数量来自 BRD 归档 objects/Part.xml；文件里没有该对象就读不到器件",
+                "field": "comp_count", "source": "BRD",
+            })
+        else:
+            items.append({
+                "category": "板信息", "item": "器件数量",
+                "design": None, "capability": None, "unit": "个",
+                "status": "info",
+                "message": f"读不到器件: {comps.get('reason', 'BRD 无 objects/Part.xml')}",
+                "note": "FAB 拼板图/纯板框图纸不含器件对象；器件数量与位号要从设计源文件取, 不拿丝印图形猜",
+                "field": "comp_count", "source": "BRD",
+            })
+
+    # ---- 引脚间距 / 焊盘间距 ----
+    pads = design.get("_pad_metrics") or {}
+    if pads.get("ok"):
+        items.append({
+            "category": "器件", "item": "引脚间距 / 焊盘间距",
+            "design": pads.get("min_pitch_mm"), "capability": None, "unit": "mm",
+            "status": "info",
+            "message": (f"引脚间距 {pads.get('min_pitch_mm')}mm"
+                        f" ({'↔'.join(pads.get('pitch_pair') or [])})，"
+                        f"焊盘间距 {pads.get('min_gap_mm')}mm"
+                        f" ({'↔'.join(pads.get('gap_pair') or [])})；共 {pads.get('count')} 个焊盘"),
+            "note": pads.get("method", "引脚间距=焊盘中心距; 焊盘间距=边缘最短距"),
+            "field": "", "source": "BRD",
+        })
+    elif pads:
+        items.append({
+            "category": "器件", "item": "引脚间距 / 焊盘间距",
+            "design": None, "capability": None, "unit": "mm",
+            "status": "info",
+            "message": f"缺数据: {pads.get('reason', 'BRD 无焊盘坐标')}",
+            "note": ("引脚间距与焊盘间距要逐个焊盘点距: 用 SKILL 导出 evan_pads.csv "
+                     "(每个引脚的焊盘外框), 或提供内嵌快照带 PAD/PASTEMASK 图形的 .brd; "
+                     "不拿丝印或引脚标记冒充焊盘"),
+            "field": "", "source": "BRD",
+        })
+
+    # ---- PTH / NPTH 孔分类与到成型线距离 ----
+    holes = design.get("_holes") or {}
+    if holes.get("pth_span_count") or holes.get("npth_span_count"):
+        def _size_list(values):
+            if not values:
+                return "无"
+            return f"{min(values):.3f}–{max(values):.3f}mm" if len(values) > 1 else f"{values[0]:.3f}mm"
+        items.append({
+            "category": "钻孔", "item": "PTH / NPTH 孔分类",
+            "design": None, "capability": None, "unit": "",
+            "status": "info",
+            "message": (f"PTH {holes.get('pth_span_count', 0)} 种孔 ({_size_list(holes.get('pth_sizes_mm'))})，"
+                        f"NPTH {holes.get('npth_span_count', 0)} 种孔 ({_size_list(holes.get('npth_sizes_mm'))})"),
+            "note": "孔径/跨度/PTH-NPTH 来自 BRD 钻孔表；镀覆方式按钻孔表标注, 未标注时按二进制跨度推断",
+            "field": "", "source": "BRD",
+        })
+
+    npth_value = _num(design.get("npth_to_edge"))
+    npth_cap = _num(drill.get("npth_to_edge", {}).get("value"))
+    if npth_value is None and (holes.get("npth_span_count") or holes.get("pth_span_count")):
+        which = "NPTH" if holes.get("npth_span_count") else "PTH"
+        items.append({
+            "category": "钻孔", "item": f"{which}孔到成型线",
+            "design": None, "capability": npth_cap if which == "NPTH" else None, "unit": "mm",
+            "status": "info",
+            "message": ("缺孔坐标: BRD 只给孔径/跨度, 没给每个孔的坐标, 算不了孔壁到板框成型线的距离"
+                        + (f"; 能力下限 {npth_cap}mm" if which == "NPTH" and npth_cap else "")),
+            "note": holes.get("npth_to_edge_reason", "算孔壁到成型线要钻孔坐标 (CAM/NC Drill)"),
+            "field": "npth_to_edge", "source": "BRD",
+        })
+    else:
+        add_check("钻孔", "NPTH孔到板边", npth_value, npth_cap, "mm",
+                  higher_is_better=True, note="孔壁到板边，太小有破孔风险",
+                  field="npth_to_edge")
 
     # ---- 阻焊 ----
     bridge_cap = get_sm_bridge_capability(capability, copper_oz)
     add_check("阻焊", "最小阻焊桥", _num(design.get("solder_mask_bridge")),
-              bridge_cap, "mm", higher_is_better=True, note=f"铜厚 {copper_oz}oz")
+              bridge_cap, "mm", higher_is_better=True, note=f"铜厚 {copper_oz}oz",
+              field="solder_mask_bridge")
     open_cap_mm = _to_mm(sm.get("min_opening"))
     if open_cap_mm is not None:
         add_check("阻焊", "阻焊开窗最小尺寸", _num(design.get("solder_mask_opening")),
-                  open_cap_mm, "mm", higher_is_better=True)
+                  open_cap_mm, "mm", higher_is_better=True,
+                  field="solder_mask_opening")
 
     # ---- 塞孔 ----
     plug_hole_d = _num(design.get("plug_hole_diameter"))
@@ -403,15 +641,72 @@ def analyze_design(design: dict, board_type: str = "rigid",
                 "status": status,
                 "message": f"树脂塞孔(孔径{plug_hole_d}mm/板厚{plug_thk}mm): {'，'.join(msgs)}",
                 "note": resin_min.get("note", ""),
+                "field": "plug_hole_diameter",
             })
 
     # ---- 丝印 ----
-    add_check("丝印", "最小文字线宽", _num(design.get("silkscreen_width")),
+    silk_design = _num(design.get("silkscreen_width"))
+    add_check("丝印", "最小文字线宽", silk_design,
               _to_mm(silk.get("min_line_width")), "mm",
-              higher_is_better=True)
+              higher_is_better=True, field="silkscreen_width")
+    if silk_design is None:
+        silk_info = design.get("_silkscreen") or {}
+        if silk_info.get("ok"):
+            cap_txt = _to_mm(silk.get("min_line_width"))
+            items.append({
+                "category": "丝印", "item": "丝印线宽",
+                "design": None, "capability": cap_txt, "unit": "mm",
+                "status": "info",
+                "message": (f"BRD 里读到 {silk_info.get('segments')} 段丝印图形, "
+                            f"但 width 字段全是 0（快照没记录线宽）; 能力 ≥{cap_txt:.3f}mm, "
+                            f"需 Allegro 属性或人工测量"),
+                "note": "丝印图形在 class/subclass 含 SILKSCREEN 的条目里; 线宽非 0 时本工具直接取最小值判定",
+                "field": "silkscreen_width", "source": "BRD",
+            })
+    silk_edge_cap = _to_mm(silk.get("min_to_outline"))
+    silk_edge_row = design.get("_silkscreen_to_outline") or {}
+    add_check("丝印", "丝印离成型线", _num(design.get("silkscreen_to_outline")),
+              silk_edge_cap, "mm", higher_is_better=True,
+              note="文字离成型线；板框丝印边框压线也可能命中，需人工确认",
+              field="silkscreen_to_outline")
+    if _num(design.get("silkscreen_to_outline")) is None and silk_edge_row.get("ok"):
+        items.append({
+            "category": "丝印", "item": "丝印离成型线",
+            "design": silk_edge_row.get("min_mm"), "capability": silk_edge_cap, "unit": "mm",
+            "status": "info",
+            "message": (f"几何算得最近丝印线段距成型线 {silk_edge_row.get('min_mm')}mm"
+                        f"（{silk_edge_row.get('silk_segments')} 段丝印 vs "
+                        f"{silk_edge_row.get('outline_segments')} 段板框）; "
+                        f"≤0.05mm 不参与判定, 若为板框丝印边框属正常, 请人工确认"),
+            "note": "丝印到板框按线段最短距离算; 0 表示丝印压到/跨过成型线",
+            "field": "silkscreen_to_outline", "source": "BRD",
+        })
+    silk_comp = design.get("_silk_to_component") or {}
+    if silk_comp.get("ok"):
+        items.append({
+            "category": "丝印", "item": "丝印到器件",
+            "design": silk_comp.get("min_mm"), "capability": None, "unit": "mm",
+            "status": "info",
+            "message": (f"板级丝印到器件本体最近 {silk_comp.get('min_mm')}mm"
+                        f"（{silk_comp.get('silk_segments')} 段板级丝印 vs "
+                        f"{silk_comp.get('body_segments')} 段器件本体轮廓）"
+                        + ("；0 表示丝印压到器件本体, 需人工确认（板框/装配轮廓重合也会是 0）"
+                           if not silk_comp.get("min_mm") else "")),
+            "note": silk_comp.get("note", ""),
+            "field": "", "source": "BRD",
+        })
+    elif silk_comp:
+        items.append({
+            "category": "丝印", "item": "丝印到器件",
+            "design": None, "capability": None, "unit": "mm",
+            "status": "info",
+            "message": f"缺数据: {silk_comp.get('reason', '没有器件本体轮廓')}",
+            "note": "丝印到器件要器件本体/焊盘几何; 快照只有 PLACE_BOUND/ASSEMBLY 轮廓时用它代替",
+            "field": "", "source": "BRD",
+        })
     add_check("丝印", "最小文字间隙", _num(design.get("silkscreen_clearance")),
               _to_mm(silk.get("min_clearance")), "mm",
-              higher_is_better=True)
+              higher_is_better=True, field="silkscreen_clearance")
     char_cap = silk.get("min_char_size", {})
     cw = _mil_to_mm(char_cap.get("width_mil"))
     ch = _mil_to_mm(char_cap.get("height_mil"))
@@ -424,6 +719,7 @@ def analyze_design(design: dict, board_type: str = "rigid",
             "unit": "mm", "status": "pass" if ok else "fail",
             "message": f"字符 {dw}x{dh}mm {'满足' if ok else '小于'}能力 {round(cw,3)}x{round(ch,3)}mm",
             "note": char_cap.get("note", ""),
+            "field": "silkscreen_char_width",
         })
 
     # ---- 覆盖膜 (仅软板) ----
@@ -431,13 +727,13 @@ def analyze_design(design: dict, board_type: str = "rigid",
         cvl = capability.get("coverlay", {})
         add_check("覆盖膜", "覆盖膜开窗最小间距", _num(design.get("coverlay_spacing")),
                   _num(cvl.get("min_window_spacing", {}).get("value")), "mm",
-                  higher_is_better=True)
+                  higher_is_better=True, field="coverlay_spacing")
         add_check("覆盖膜", "开窗边缘到焊盘距离", _num(design.get("coverlay_to_pad")),
                   _num(cvl.get("window_to_pad", {}).get("value")), "mm",
-                  higher_is_better=True)
+                  higher_is_better=True, field="coverlay_to_pad")
         add_check("覆盖膜", "开窗边缘到线路距离", _num(design.get("coverlay_to_trace")),
                   _num(cvl.get("window_to_trace", {}).get("value")), "mm",
-                  higher_is_better=True)
+                  higher_is_better=True, field="coverlay_to_trace")
         win_cap = cvl.get("min_window_rect", {}).get("value")
         win_design = design.get("coverlay_window")
         if win_cap and win_design and len(win_cap) == 2 and isinstance(win_design, (list, tuple)):
@@ -450,21 +746,101 @@ def analyze_design(design: dict, board_type: str = "rigid",
                 "message": f"开窗 {win_design[0]}x{win_design[1]}mm "
                            f"{'满足' if ok else '小于'}最小开窗 {win_cap[0]}x{win_cap[1]}mm",
                 "note": cvl.get("min_window_rect", {}).get("note", ""),
+                "field": "coverlay_window",
             })
 
     # ---- 测试 ----
     t2 = test.get("min_pad_2wire") or test.get("min_pad") or {}
     add_check("测试", "电测PAD(二线)", _num(design.get("test_pad_2wire")),
-              _num(t2.get("value")), "mm", higher_is_better=True)
+              _num(t2.get("value")), "mm", higher_is_better=True,
+              field="test_pad_2wire")
+    add_check("测试", "测试点直径", _num(design.get("test_pad_diameter")),
+              _num(t2.get("value")), "mm", higher_is_better=True,
+              field="test_pad_diameter",
+              note="测试点按钢网层圆焊盘识别; 能力取 test.min_pad_2wire")
+    pads_info = design.get("_pads") or {}
+    tp_info = design.get("_test_points") or {}
+    if _num(design.get("test_pad_diameter")) is None:
+        if tp_info.get("ok"):
+            items.append({
+                "category": "测试", "item": "测试点",
+                "design": None, "capability": _num(t2.get("value")), "unit": "mm",
+                "status": "info",
+                "message": (f"钢网层圆焊盘识别到测试点 {tp_info.get('count')} 个"
+                            f"（{tp_info.get('note', '')}）; 直径能力 ≥{_num(t2.get('value'))}mm"),
+                "note": "测试点=钢网层(PASTEMASK)上的圆焊盘", "field": "test_pad_diameter",
+                "source": "BRD",
+            })
+        elif pads_info:
+            items.append({
+                "category": "测试", "item": "测试点",
+                "design": None, "capability": _num(t2.get("value")), "unit": "mm",
+                "status": "info",
+                "message": f"缺数据: {pads_info.get('reason', '快照里没有焊盘图形')}",
+                "note": "识别测试点要钢网层(PASTEMASK)圆焊盘坐标, 不拿丝印块或 PIN 标记冒充",
+                "field": "test_pad_diameter", "source": "BRD",
+            })
     t4 = test.get("min_pad_4wire", {})
     t4v = t4.get("value") if isinstance(t4, dict) else None
     if isinstance(t4v, (list, tuple)) and t4v:
         add_check("测试", "电测PAD(四线-宽)", _num(design.get("test_pad_4wire")),
-                  _num(t4v[0]), "mm", higher_is_better=True)
+                  _num(t4v[0]), "mm", higher_is_better=True,
+                  field="test_pad_4wire")
+
+    # ---- 能力库全覆盖: 把 YAML 里没被判到的选项摊出来 (已判的不重复) ----
+    try:
+        from src.dfm_coverage import coverage_rows
+        cov_rows, cov_stats = coverage_rows(capability, design, items, _num, _to_mm)
+        items.extend(cov_rows)
+        items.append({
+            "category": "能力库覆盖", "item": "能力项覆盖清单",
+            "design": None, "capability": None, "unit": "",
+            "status": "info",
+            "message": (f"能力库共 {cov_stats['total']} 项: 本次已判定 "
+                        f"{cov_stats['covered'] + cov_stats['judged']} 项, "
+                        f"缺数据 {cov_stats['missing']} 项, "
+                        f"未接入自动判定 {cov_stats['unmapped']} 项"),
+            "note": "已判定的项在上面各行; 缺数据/未接入的项逐条列在下方, 不当作通过",
+            "field": "", "source": "能力库",
+        })
+    except Exception as exc:  # noqa: BLE001  覆盖清单失败不影响主判定
+        cov_stats = {"error": str(exc)}
+        items.append({
+            "category": "能力库覆盖", "item": "能力项覆盖清单",
+            "design": None, "capability": None, "unit": "", "status": "info",
+            "message": f"能力库覆盖清单生成失败: {exc}",
+            "note": "", "field": "", "source": "能力库",
+        })
+        cov_stats = {}
+
+    # 补齐来源标注 (手工 append 的项也要能显示"这个值哪来的")
+    for it in items:
+        if "source" not in it:
+            src_label, src_detail = source_of(it.get("field"))
+            it["source"] = src_label
+            it["source_detail"] = src_detail
+        # 推算出来的项必须在结论里说清楚怎么来的, 不能让人当成实测
+        detail = it.get("source_detail") or ""
+        if "KEEPIN" in detail:
+            extra = "由 ROUTE KEEPIN 到板框推算(设计允许边界), 非实测铜箔位置"
+            it["message"] = f"{it.get('message', '')}（{extra}）"
+        elif "板级约束" in detail:
+            extra = "BRD 未分内外层, 按板级最小值代入"
+            it["message"] = f"{it.get('message', '')}（{extra}）"
 
     errors = [it for it in items if it["status"] == "fail"]
     warnings = [it for it in items if it["status"] == "warn_limit"]
     infos = [it for it in items if it["status"] == "info"]
+
+    coverage = compute_coverage(design, board_type)
+    if errors:
+        verdict = "不通过"
+    elif coverage["ratio"] < 0.5:
+        verdict = "数据不足，不能作为放行依据"
+    elif warnings:
+        verdict = "通过（有风险项）"
+    else:
+        verdict = "通过"
 
     result = {
         "factory": factory,
@@ -482,6 +858,19 @@ def analyze_design(design: dict, board_type: str = "rigid",
         "error_count": len(errors),
         "warning_count": len(warnings),
         "passed": len(errors) == 0,
+        "coverage": coverage,
+        "capability_coverage": cov_stats,
+        "verdict": verdict,
+        "releasable": len(errors) == 0 and coverage["ratio"] >= 0.6,
+        "sources": design.get("_sources", {}),
+        "data_warnings": design.get("_warnings", []),
+        "data_origin": design.get("_data_origin", "manual"),
+        "components": design.get("_components") or {},
+        "holes": design.get("_holes") or {},
+        # 表单里预填但用户没确认的示例值, 以及完全没填的项: 都不参与判定
+        "assumed_fields": list(design.get("_assumed") or []),
+        "missing_fields": list(design.get("_missing") or []),
+        "brd_item_count": sum(1 for it in items if it.get("source") == "BRD"),
     }
 
     try:
@@ -500,6 +889,7 @@ def analyze_design(design: dict, board_type: str = "rigid",
         result["risk"] = {}
         result["info_stats"] = {}
         result["issue_error"] = str(exc)
+
 
     return result
 

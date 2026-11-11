@@ -1,0 +1,16 @@
+$PACKAGE
+'NET' 'GND'
+'PIN' '1' 'U1'
+'PIN' '2' 'U2'
+'PIN' '1' 'C1'
+'PIN' '2' 'C1'
+'NET' 'VCC_3V3'
+'PIN' '3' 'U1'
+'PIN' '1' 'R1'
+'NET' 'SPI_CLK'
+'PIN' '4' 'U1'
+'PIN' '1' 'R2'
+'NET' 'RESET_N'
+'PIN' '5' 'U1'
+'PIN' '2' 'R3'
+$END

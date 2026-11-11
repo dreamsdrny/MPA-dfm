@@ -22,8 +22,8 @@ from src.rule_engine import compute_class_constraints
 from src.dfm_engine import validate_constraints
 from src.skill_generator import generate_skill_script
 from src.report_generator import generate_excel_report, generate_text_report
-from src.checklist_reader import read_checklist_excel, merge_checklist_with_defaults
-from src.checklist_auto_fill import auto_fill_checklist, generate_checklist_summary
+from src.checklist_reader import read_checklist_excel
+from src.checklist_auto_fill import auto_fill_checklist
 
 
 DEMO_NETS = [
@@ -54,6 +54,13 @@ DEMO_NETS = [
 ]
 
 
+def _app_dir() -> str:
+    """程序所在目录: 打包后是 exe 目录 (而非临时解压目录), 外层输出默认落在这里。"""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
 def run_pipeline(
     brd_path: str = None,
     use_demo: bool = False,
@@ -67,7 +74,7 @@ def run_pipeline(
     copper_oz: float = None,
     factory: str = "hongban",
 ) -> dict:
-    base_dir = os.path.dirname(os.path.abspath(__file__))
+    base_dir = _app_dir()
     if output_dir is None:
         output_dir = os.path.join(base_dir, "output")
 
@@ -321,15 +328,198 @@ Examples:
         help="DFM功能分析模式: 传入设计参数JSON文件，直接输出制程能力比对报告 (不生成约束)"
     )
     parser.add_argument(
+        "--fill-checklist", type=str, default=None, metavar="XLSX",
+        dest="fill_checklist",
+        help="主流程: 用 BRD 分析结果填写 Checklist, 输出填好的 xlsx + 填写报告; 传 demo 用内置演示模板"
+    )
+    parser.add_argument(
+        "--template-info", type=str, default=None, metavar="XLSX",
+        dest="template_info",
+        help="只检查 Checklist 模板结构 (表头行/列识别), 不填写"
+    )
+    parser.add_argument(
+        "--pick", type=str, default=None, metavar="BRD",
+        help="坐标定位模式: 分析 .brd 并输出不符合项的孔位/元件坐标清单 (需坐标来源)"
+    )
+    parser.add_argument(
+        "--pick-files", nargs="+", default=None, dest="pick_files", metavar="FILE",
+        help="坐标来源: SKILL 导出的 evan_*.csv / place_txt.txt / Excellon .drl"
+    )
+    parser.add_argument(
+        "--export-skill", type=str, default=None, dest="export_skill", metavar="DIR",
+        help="只生成 Allegro SKILL 坐标导出脚本到指定目录 (不分析)"
+    )
+    parser.add_argument(
         "--factory", type=str, default="hongban",
         choices=["hongban", "sihui"],
         help="板厂制程能力库: hongban(红版)/sihui(四会)` (默认: hongban)"
     )
+    # ---- BRD 分析与输出引擎 (8 大类能力) ----
+    parser.add_argument(
+        "--analyze", type=str, default=None, metavar="BRD",
+        help="BRD 分析与输出: 按 8 大类跑全部分析能力 (DRC/物理结构/SI电气/"
+             "制造输出/报告/装配/MCAD/数据导出), 并生成报告与可生成的制造文件"
+    )
+    parser.add_argument(
+        "--analyze-files", nargs="+", default=None, dest="analyze_files", metavar="FILE",
+        help="分析用的 Allegro 导出文件: DRC 报告(.rpt) / Placement(place_txt.txt) / "
+             "Excellon(.drl) / 网表(pstxnet.dat) / IPC-356(.ipc) / 另一个 .brd(做版本差异)"
+    )
+    parser.add_argument(
+        "--analyze-only", nargs="+", default=None, dest="analyze_only", metavar="ID",
+        help="只跑指定的能力 id 或类别 (如 drc.width / mfg.artwork / reports)"
+    )
+    parser.add_argument(
+        "--analyze-skip", nargs="+", default=None, dest="analyze_skip", metavar="ID",
+        help="跳过指定的能力 id 或类别"
+    )
+    parser.add_argument(
+        "--analyze-formats", type=str, default="xlsx,txt,html,json,csv",
+        dest="analyze_formats",
+        help="报告输出格式, 逗号分隔: xlsx,txt,html,json,csv (默认全出)"
+    )
+    parser.add_argument(
+        "--list-capabilities", action="store_true", dest="list_capabilities",
+        help="列出 BRD 分析与输出引擎支持的全部能力 (8 大类) 后退出"
+    )
+    parser.add_argument(
+        "--input-project", metavar="BRD",
+        help="以 BRD 为主资料创建统一输入模型并输出 JSON"
+    )
+    parser.add_argument(
+        "--supplements", nargs="*", default=[], metavar="FILE",
+        help="统一输入模型的补充资料: Gerber / BOM CSV / DSN / ODB++ / STEP"
+    )
+    parser.add_argument(
+        "--input-json", metavar="JSON", default=None,
+        help="统一输入模型 JSON 输出路径 (默认输出到标准输出)"
+    )
 
     args = parser.parse_args()
 
+    if args.input_project:
+        import json
+        from src.design_inputs import load_project
+        try:
+            project = load_project(args.input_project, args.supplements)
+            content = json.dumps(project, ensure_ascii=False, indent=2)
+            if args.input_json:
+                with open(args.input_json, "w", encoding="utf-8") as f:
+                    f.write(content + "\n")
+                print("统一输入模型已写入:", args.input_json)
+            else:
+                print(content)
+            if any(item["status"] == "error" for item in project["supplements"]):
+                raise SystemExit(1)
+        except (OSError, ValueError) as exc:
+            parser.exit(1, "输入资料解析失败: " + str(exc) + "\n")
+        return
+
+    if args.list_capabilities:
+        from src.brd_analysis import capability_rows
+
+        rows = capability_rows()
+        print("=" * 78)
+        print(f"  BRD 分析与输出能力目录 (共 {len(rows)} 项)")
+        print("=" * 78)
+        current = None
+        for row in rows:
+            if row["category_label"] != current:
+                current = row["category_label"]
+                print()
+                print(f"  【{current}】")
+            print(f"    {row['id']:<26} {row['name_cn']}")
+            print(f"        {row['desc']}")
+            print(f"        数据来源: {row['engine_label']}   需要: "
+                  f"{'、'.join(row['needs']) or '—'}")
+        return
+
+    if args.analyze:
+        from src.brd_analysis import analyze, write_reports
+
+        if not os.path.exists(args.analyze):
+            print(f"[ERROR] BRD 文件不存在: {args.analyze}")
+            sys.exit(1)
+        out_dir = args.output or os.path.join(_app_dir(), "output")
+        print("=" * 78)
+        print("  BRD 分析与输出 (DRC / 物理结构 / SI电气 / 制造输出 / 报告 / 装配 / MCAD / 数据导出)")
+        print("=" * 78)
+        print(f"  文件: {args.analyze}")
+        if args.analyze_files:
+            print(f"  导出文件: {'; '.join(os.path.basename(p) for p in args.analyze_files)}")
+        print("-" * 78)
+        bundle = analyze(
+            args.analyze, out_dir=out_dir, export_files=args.analyze_files,
+            only=args.analyze_only, skip=args.analyze_skip,
+            log=lambda text, tag=None: print(text),
+        )
+        if not bundle.get("ok"):
+            print(f"[ERROR] {bundle.get('error')}")
+            sys.exit(1)
+
+        board = bundle["board"]
+        print("-" * 78)
+        print(f"  板名: {board.get('board_name')}   层数: {board.get('layer_count')}   "
+              f"网络: {board.get('net_count')}   器件: {board.get('part_count')}")
+        stats = bundle["stats"]
+        print(f"  结论: 通过 {stats['pass']} / 不符合 {stats['fail']} / 需关注 {stats['warn']} / "
+              f"信息 {stats['info']} / 数据不足 {stats['unavailable']}  (共 {stats['total']} 项)")
+        for res in bundle["results"]:
+            if res["status"] in ("fail", "warn"):
+                print(f"    [{res['status_label']}] {res['name_cn']}: {res['summary']}")
+        if bundle.get("catalog_errors"):
+            print("  [WARN] 部分类别模块未加载:")
+            for err in bundle["catalog_errors"]:
+                print(f"        {err}")
+
+        formats = [f.strip() for f in (args.analyze_formats or "").split(",") if f.strip()]
+        base = f"BRD分析报告_{board.get('board_name') or 'board'}"
+        files = write_reports(bundle, out_dir, base_name=base, formats=formats or None)
+        print("-" * 78)
+        print("  报告:")
+        for key in ("xlsx", "txt", "html", "json"):
+            if files.get(key):
+                print(f"    {key.upper():<5} {files[key]}")
+        if files.get("csv"):
+            print(f"    CSV   {files['csv']} 目录 ({len(files.get('csv_files') or [])} 个文件)")
+        if bundle.get("artifacts"):
+            print("  生成的设计/制造文件:")
+            for art in bundle["artifacts"][:40]:
+                print(f"    [{art['kind']:<9}] {art['path']}")
+            if len(bundle["artifacts"]) > 40:
+                print(f"    ... 另有 {len(bundle['artifacts']) - 40} 个")
+        missing = [r for r in bundle["results"] if r.get("missing")]
+        if missing:
+            print("-" * 78)
+            print(f"  数据不足的 {len(missing)} 项 (缺什么 / 怎么补, 详见报告「缺失数据与补法」页):")
+            for res in missing[:12]:
+                print(f"    {res['name_cn']}: {res['missing'][0]}")
+        return
+
+    if args.export_skill:
+        from src.allegro_skill import write_bundle
+
+        paths = write_bundle(args.export_skill)
+        print("已生成 SKILL 坐标导出脚本:")
+        for key in ("il", "scr", "readme"):
+            print("  " + paths[key])
+        print('PCB Editor 里执行: skill load("%s")  然后  evan_pick_all("%s")'
+              % (paths["il"].replace("\\", "/"),
+                 args.export_skill.replace("\\", "/")))
+        return
+
+    if args.pick:
+        from src.pick import analyze_and_locate, find_sources, print_summary
+
+        files = args.pick_files or find_sources(args.pick, args.output or "")
+        bundle = analyze_and_locate(args.pick, files=files, out_dir=args.output,
+                                    board_type=args.board_type,
+                                    level=args.capability, factory=args.factory)
+        print_summary(bundle)
+        return
+
     if args.dfm:
-        from src.dfm_engine import analyze_design, load_capability_db, factory_label, normalize_factory
+        from src.dfm_engine import analyze_design, factory_label, normalize_factory
         dfm_factory = normalize_factory(args.factory)
         if args.dfm == "template":
             template = {
@@ -371,7 +561,15 @@ Examples:
         print("-" * 70)
         print(f"  结论: {'DFM PASS' if result['passed'] else 'DFM FAIL'}"
               f"  (错误 {result['error_count']}, 警告 {result['warning_count']})")
-        out_dir = args.output or os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+        coverage = result.get("coverage") or {}
+        if coverage:
+            print(f"  数据覆盖率: {coverage.get('ratio', 0):.0%} "
+                  f"({coverage.get('checked', 0)}/{coverage.get('total', 0)})"
+                  f"  判定: {result.get('verdict', '')}"
+                  f"  可否放行: {'可以' if result.get('releasable') else '不可以'}")
+            if coverage.get("missing_items"):
+                print(f"  缺数据未检查: {'、'.join(coverage['missing_items'])}")
+        out_dir = args.output or os.path.join(_app_dir(), "output")
         os.makedirs(out_dir, exist_ok=True)
         json_out = os.path.join(out_dir, "dfm_analysis.json")
         with open(json_out, "w", encoding="utf-8") as f:
@@ -389,6 +587,66 @@ Examples:
         risk = result.get("risk", {})
         if risk:
             print(f"  可制造性评分: {risk.get('score')}/100  风险等级: {risk.get('risk_level')}")
+        return
+
+    if args.template_info:
+        from src.checklist_template import read_template
+        if not os.path.exists(args.template_info):
+            print(f"[ERROR] 文件不存在: {args.template_info}")
+            sys.exit(1)
+        info = read_template(args.template_info)
+        names = {"category": "类别", "subcategory": "子类", "no": "编号", "grade": "级别",
+                 "items": "条目", "standard": "符合标准", "note": "原因",
+                 "check": "检查", "approved": "签核"}
+        print("=" * 66)
+        print("  Checklist 模板检查")
+        print("=" * 66)
+        print(f"  文件    : {info['path']}")
+        print(f"  工作表  : {info['sheet']}")
+        print(f"  表头行  : 第 {info['header_row']} 行")
+        print(f"  识别方式: {info['method']}")
+        for key, col in sorted(info["columns"].items(), key=lambda kv: kv[1]):
+            print(f"    {names.get(key, key):<6} 第 {col} 列")
+        print(f"  检查项  : {info['count']} 项 (带编号 {info['numbered']} 项)")
+        print(f"  规则库  : {info['rule_count']} 条 ({info['config_path'] or '内置默认'})")
+        if info["warnings"]:
+            print("  警告:")
+            for warn in info["warnings"]:
+                print(f"    ! {warn}")
+        else:
+            print("  结论    : 模板结构正常")
+        return
+
+    if args.fill_checklist:
+        from src.checklist_pipeline import run as run_checklist
+        checklist = args.fill_checklist
+        demo = checklist.lower() == "demo"
+        if not demo and not os.path.exists(checklist):
+            print(f"[ERROR] Checklist 文件不存在: {checklist}")
+            sys.exit(1)
+        out_dir = args.output or os.path.join(_app_dir(), "output")
+        result = run_checklist(
+            checklist_path="" if demo else checklist,
+            output_dir=out_dir,
+            brd_path=args.brd or "",
+            nets_path=args.nets or "",
+            factory=args.factory,
+            board_type=args.board_type,
+            level=args.capability,
+            copper_um=args.copper,
+            copper_oz=args.copper_oz if args.copper_oz is not None else 1.0,
+            checker=args.checker,
+            demo=demo or (not args.brd and not args.nets),
+            log=lambda text, tag=None: print(text),
+        )
+        stats = result["stats"]
+        print("=" * 66)
+        print(f"  填写结果: {result['files']['filled']}")
+        print(f"  填写报告: {result['files']['report_xlsx']}")
+        print(f"  文本摘要: {result['files']['report_txt']}")
+        print(f"  统计: 共 {stats['total']} 项, PASS {stats['auto_pass']}, "
+              f"VERIFY {stats['auto_verify']}, FAIL {stats['auto_fail']}, "
+              f"MANUAL {stats['manual']}, N/A {stats['na']}")
         return
 
     if args.gui:
@@ -427,7 +685,7 @@ Examples:
             factory=args.factory,
         )
 
-        output_dir = args.output or os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+        output_dir = args.output or os.path.join(_app_dir(), "output")
         generate_skill_script(
             constraints=constraints,
             signal_classification=classification,
