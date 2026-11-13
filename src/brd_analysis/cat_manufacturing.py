@@ -29,7 +29,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from src.brd_analysis import facts
 from src.brd_analysis.context import Context
-from src.brd_analysis.model import (INFO, PASS, WARN, Capability, Result,
+from src.brd_analysis.model import (FAIL, INFO, PASS, WARN, Capability, Result,
                                     unavailable)
 
 # --------------------------------------------------------------------------

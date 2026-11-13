@@ -31,3 +31,26 @@ Desktop.ini
 # output: only auto_constraint.il is tracked
 output/*
 !output/auto_constraint.il
+
+# Executables / installers
+*.exe
+*.msi
+*.dll
+
+# CAD / manufacturing data
+*.brd
+*.gbr
+*.drl
+*.ipc
+*.rou
+
+# Sensitive / proprietary data
+docs/screenshots/
+store-brd/
+store-bom/
+tmp_compfixture/
+SMT/
+PPT/
+Pcb-manufacture/
+config/dfm_capability_hongban.yaml
+config/dfm_capability_sihui.yaml

@@ -28,7 +28,7 @@ def build_header(root, win):
     meta.pack(side=tk.RIGHT, padx=24, pady=10)
     tk.Label(meta, text="Evan 电子 · 内部工具", bg=COLORS["header"],
              fg=COLORS["header_text"], font=win._fonts["small"]).pack(anchor=tk.E)
-    tk.Label(meta, text="支持 .brd (Allegro 17.x) / Excel Checklist",
+    tk.Label(meta, text="支持 .brd (Allegro 17.x) / Checklist / BOM",
              bg=COLORS["header"], fg=COLORS["header_muted"],
              font=win._fonts["small"]).pack(anchor=tk.E, pady=(2, 0))
     return header
@@ -67,6 +67,9 @@ def build_footer(root, win):
     win.analyze_btn = ttk.Button(box, text="BRD 分析与输出", style="Secondary.TButton",
                                  command=win._open_analyze)
     win.analyze_btn.pack(side=tk.LEFT, padx=(10, 0))
+    win.store_btn = ttk.Button(box, text="BRD↔BOM 联动检查", style="Secondary.TButton",
+                               command=win._open_store_check)
+    win.store_btn.pack(side=tk.LEFT, padx=(10, 0))
     win.open_btn = ttk.Button(box, text="打开输出目录", style="Secondary.TButton",
                               command=win._open_output)
     win.open_btn.pack(side=tk.LEFT, padx=(8, 0))

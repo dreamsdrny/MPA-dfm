@@ -44,79 +44,159 @@ _natural_key = brd_components._natural_key
 # 来源发现
 # --------------------------------------------------------------------------
 def _search_dirs(brd_path: str, dirs: Iterable[str]) -> List[str]:
+    # 初始化用于存放所有候选目录的列表
     out: List[str] = []
+    
+    # 如果传入了有效的 brd 文件路径
     if brd_path:
+        # 获取 brd 文件所在目录的绝对路径作为基准目录
         base = os.path.dirname(os.path.abspath(brd_path))
+        # 将 brd 所在目录及其常见子目录加入候选列表
         out.extend([base, os.path.join(base, "定位清单"),
                     os.path.join(base, "定位清单", "allegro_bridge"),
                     os.path.join(base, "allegro_bridge"),
                     os.path.join(base, "统计清单"), os.path.join(base, "output"),
                     os.path.join(base, "exports")])
+    
+    # 将用户传入的目录列表追加到候选列表中（如果 dirs 为 None 则追加空列表）
     out.extend(dirs or [])
+    
+    # 初始化集合用于记录已添加的目录（用于去重），列表用于保持添加顺序
     seen, uniq = set(), []
+    
+    # 遍历所有候选目录
     for d in out:
+        # 将目录路径标准化（统一大小写）并转为绝对路径，作为去重键
         key = os.path.normcase(os.path.abspath(d))
+        # 如果目录真实存在且未被添加过
         if os.path.isdir(d) and key not in seen:
+            # 记录该目录键，避免重复
             seen.add(key)
+            # 将原始目录路径加入结果列表
             uniq.append(d)
+    
+    # 返回去重后且真实存在的目录列表
     return uniq
 
 
 def component_files(brd_path: str = "", files: Iterable[str] = (),
                     dirs: Iterable[str] = ()) -> List[Tuple[str, str]]:
     """找出可用的器件来源，返回 [(路径, 类型)]；类型: partxml 不在这里。"""
+    # 初始化结果列表，存放 (文件绝对路径, 文件类型) 元组
     found: List[Tuple[str, str]] = []
+    # 初始化集合，用于记录已处理的文件，防止重复添加
     seen = set()
 
     def add(path: str):
+        """内部函数：将给定的文件路径加入结果列表（如果有效且未重复）"""
+        # 路径为空或文件不存在则跳过
         if not path or not os.path.isfile(path):
             return
+        # 将路径标准化（统一大小写）并转为绝对路径，作为去重键
         key = os.path.normcase(os.path.abspath(path))
+        # 如果已经处理过该文件则跳过
         if key in seen:
             return
+        # 记录该文件，避免重复
         seen.add(key)
+        # 嗅探文件类型
         kind = _sniff_kind(path)
+        # 如果识别出有效类型，则将 (绝对路径, 类型) 加入结果列表
         if kind:
             found.append((os.path.abspath(path), kind))
 
+    # 遍历用户直接传入的文件路径列表，逐个添加
     for path in files or ():
         add(path)
+
+    # 遍历通过 _search_dirs 生成的候选搜索目录
     for folder in _search_dirs(brd_path, dirs):
+        # 检查目录中是否存在指定的固定名称文件，并添加
         for name in ("evan_components.csv", "evan_pads.csv",
                      "place_txt.txt", "placement.txt"):
             add(os.path.join(folder, name))
+        # 尝试列出目录中的所有文件名
         try:
             names = os.listdir(folder)
         except OSError:
+            # 如果无法列出目录则跳过
             continue
+        # 遍历目录中的每个文件名
         for name in names:
             low = name.lower()
+            # 筛选扩展名为 .csv 或 .txt，且文件名包含 place/component/pick 的文件
             if low.endswith((".csv", ".txt")) and (
-                    "place" in low or "component" in low or "pick" in low):
+                    "place" in low or "component" in low or "pick" in low or "comp_xy" in low):
                 add(os.path.join(folder, name))
+
+    # 返回最终找到的 (文件路径, 文件类型) 列表
     return found
 
 
 def _sniff_kind(path: str) -> str:
-    low = os.path.basename(path).lower()
-    if low.startswith("evan_pads") or "pad" in low:
-        return "pads"
-    if "component" in low or low.startswith("evan_comp"):
-        return "components"
-    if "place" in low:
+    if not os.path.exists(path):
+        return ""
+        
+    low_path = path.lower()
+    if not (low_path.endswith(".csv") or low_path.endswith(".txt")):
+        return ""
+
+    # 1. 尝试多种常见编码（兼容 GBK/GB18030 编码的中文 EDA 报表）
+    head_text = ""
+    for enc in ("utf-8-sig", "gbk", "gb18030", "latin1"):
+        try:
+            with open(path, "r", encoding=enc, errors="ignore") as f:
+                # 扩大读取范围至前 8 行，防止表头位置偏下
+                head_lines = [next(f, "") for _ in range(8)]
+            head_text = "".join(head_lines).upper()
+            if head_text.strip():
+                break
+        except (OSError, StopIteration):
+            continue
+
+    # 2. 基于文件内容的关键词加权评分（内容优先，更具鲁棒性）
+    if "UUNITS" in head_text and "SYMBOL_X" in head_text:
         return "placement"
-    if not low.endswith(".csv"):
-        return ""
-    try:
-        with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
-            head = [next(f, "") for _ in range(4)]
-    except OSError:
-        return ""
-    text = "".join(head).upper()
-    if "W_DBU" in text and "PADSTACK" in text:
+    # Placement's textual header also says REFDES/PACKAGE. Only CSV coordinate
+    # columns identify the SKILL format; keyword scores misroute Placement.
+    if "X_DBU" in head_text or "X_UU" in head_text:
+        if "W_DBU" in head_text or "W_UU" in head_text:
+            return "pads"
+        return "holes" if "PADSTACK" in head_text else "components"
+    if "PLACE" in os.path.basename(path).upper() or any(
+            pick._PLACE_RE.match(line.strip()) for line in head_text.splitlines()):
+        return "placement"
+    pads_score = 0
+    comp_score = 0
+    place_score = 0
+
+    # Pads 特征关键词及权重
+    if "PADSTACK" in head_text: pads_score += 3
+    if "W_DBU" in head_text: pads_score += 2
+    if "PAD" in head_text: pads_score += 1
+
+    # Components / Placement 特征关键词及权重
+    if "REFDES" in head_text or "位号" in head_text: comp_score += 3
+    if "DEVICE" in head_text or "PACKAGE" in head_text or "元件" in head_text: comp_score += 2
+    if "PLACE" in head_text or ("X" in head_text and "Y" in head_text): place_score += 1
+
+    # 内容判定阈值
+    if pads_score > comp_score and pads_score >= 2:
         return "pads"
-    if "REFDES" in text or "位号" in text:
+    if comp_score >= 2:
         return "components"
+    if place_score >= 2:
+        return "placement"
+
+    # 3. 若内容特征不明显，再回退到文件名匹配作为辅助兜底
+    base_name = os.path.basename(path).lower()
+    if "pad" in base_name and "comp" not in base_name:
+        return "pads"
+    if "component" in base_name or "comp" in base_name:
+        return "components"
+    if "place" in base_name:
+        return "placement"
+
     return ""
 
 
@@ -137,9 +217,9 @@ def _side(value) -> str:
     up = str(value or "").strip().upper()
     if up in ("T", "TOP", "TOP SIDE"):
         return "TOP"
-    if up in ("B", "BOTTOM", "BOT SIDE"):
+    if up in ("B", "BOTTOM", "BOT SIDE", "BOT", "BTM"):
         return "BOTTOM"
-    return up
+    return "未知" if up else ""
 
 
 def _package_map(objects: Dict[str, bytes], refdes: List[str]) -> Dict[str, str]:
@@ -222,6 +302,9 @@ def load_component_inventory(brd_path: str = "", files: Iterable[str] = (),
             warnings.append(f"{name}: {res.get('error') or '没有解析到器件行'}")
             continue
         items = res.get("items") or []
+        if kind == "holes":
+            warnings.append(f"{name}: 孔/引脚坐标不能代替器件原点，请使用元件或 Placement 导出")
+            continue
         if kind == "pads":
             label = "焊盘导出"
         elif kind == "placement":

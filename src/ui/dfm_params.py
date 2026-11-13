@@ -178,11 +178,11 @@ class ParamPanel(ttk.Frame):
                 continue
             if cat != current:
                 current = cat
-                band = tk.Frame(self._host, bg="#F1F5FB")
+                band = tk.Frame(self._host, bg=COLORS["row_alt"])
                 band.grid(row=row, column=0, columnspan=3, sticky="we", pady=(10, 3))
                 text = cat if not CATEGORY_HINTS.get(cat) else \
                     f"{cat}　·　{CATEGORY_HINTS[cat]}"
-                tk.Label(band, text="  " + text, bg="#F1F5FB",
+                tk.Label(band, text="  " + text, bg=COLORS["row_alt"],
                          fg=COLORS["primary_dark"],
                          font=self._font_bold, anchor=tk.W).pack(fill=tk.X, ipady=3)
                 row += 1
@@ -227,7 +227,8 @@ class ParamPanel(ttk.Frame):
         if tag is None:
             return
         origin = self.origins.get(key, "empty")
-        text, color = _ORIGIN_TAG.get(origin, _ORIGIN_TAG["empty"])
+        text = _ORIGIN_TAG.get(origin, _ORIGIN_TAG["empty"])[0]
+        color = COLORS[{"brd":"success", "manual":"primary", "default":"warn", "empty":"faint"}.get(origin,"faint")]
         tag.configure(text=text, fg=color)
 
     def _on_edit(self, key: str) -> None:

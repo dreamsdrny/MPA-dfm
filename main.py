@@ -262,6 +262,10 @@ def run_pipeline(
 
 
 def main():
+    # Windows legacy consoles cannot encode every symbol in engineering reports.
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None and hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     parser = argparse.ArgumentParser(
         description="BRD-AI: Cadence Allegro PCB Constraint Generator",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -271,6 +275,8 @@ Examples:
   python main.py --brd "../860-000776_FAB_BRD_Rev_A_260721_3D.brd"
   python main.py --brd my_board.brd --capability advanced
   python main.py --brd my_board.brd --output ./my_output
+  python main.py --store-check
+  python main.py --input-project my_board.brd --bom full_bom.xlsx
         """,
     )
     parser.add_argument(
@@ -388,20 +394,108 @@ Examples:
     )
     parser.add_argument(
         "--supplements", nargs="*", default=[], metavar="FILE",
-        help="统一输入模型的补充资料: Gerber / BOM CSV / DSN / ODB++ / STEP"
+        help="统一输入模型的补充资料: Gerber / BOM (.csv/.xlsx) / DSN / ODB++ / STEP; "
+             "BOM 会自动与 BRD 位号双向核对"
     )
     parser.add_argument(
         "--input-json", metavar="JSON", default=None,
         help="统一输入模型 JSON 输出路径 (默认输出到标准输出)"
     )
+    parser.add_argument(
+        "--bom", metavar="BOM", default=None,
+        help="完整 BOM (.csv / .xlsx, 需配合 --input-project), 自动与 BRD 位号双向核对"
+    )
+    # ---- 资料库联动检查 (store-brd / store-bom) ----
+    parser.add_argument(
+        "--store-check", action="store_true", dest="store_check",
+        help="资料库联动检查: 扫描 store-brd/ 与 store-bom/, BRD 与 BOM 自动配对并双向核对"
+    )
+    parser.add_argument(
+        "--store-root", metavar="DIR", default=None, dest="store_root",
+        help="资料库根目录 (默认程序目录, 其下为 store-brd / store-bom)"
+    )
+    parser.add_argument(
+        "--store-brd-dir", metavar="DIR", default=None, dest="store_brd_dir",
+        help="BRD 目录 (默认 <根目录>/store-brd)"
+    )
+    parser.add_argument(
+        "--store-bom-dir", metavar="DIR", default=None, dest="store_bom_dir",
+        help="BOM 目录 (默认 <根目录>/store-bom)"
+    )
+    parser.add_argument(
+        "--store-out", metavar="DIR", default=None, dest="store_out",
+        help="联动检查报告输出目录 (默认输出目录)"
+    )
 
     args = parser.parse_args()
 
+    if args.store_check:
+        from src.design_inputs.store import run_check, summary_lines
+        from src.store_report import write_report
+
+        out_dir = args.store_out or args.output or os.path.join(_app_dir(), "output")
+        print("=" * 78)
+        print("  BRD ↔ BOM 资料库联动检查")
+        print("=" * 78)
+        bundle = run_check(root=args.store_root, brd_dir=args.store_brd_dir,
+                           bom_dir=args.store_bom_dir,
+                           log=lambda text, tag=None: print(text))
+        print("-" * 78)
+        for line in summary_lines(bundle):
+            print("  " + line)
+        for pair in bundle["pairs"]:
+            print("-" * 78)
+            print(f"  {pair['brd']['name']}  ↔  {pair['bom']['name']}   "
+                  f"{pair['verdict_label']}")
+            for check in pair["checks"]:
+                print(f"    [{check['status_label']:<4}] {check['name']}: {check['detail']}")
+            reconciliation = pair.get("reconciliation") or {}
+            if reconciliation.get("missing_in_bom"):
+                sample = "、".join(item["refdes"]
+                                  for item in reconciliation["missing_in_bom"][:10])
+                print(f"    BOM 漏项: {sample}")
+            if reconciliation.get("missing_in_brd"):
+                sample = "、".join(item["refdes"]
+                                  for item in reconciliation["missing_in_brd"][:10])
+                print(f"    BOM 多出: {sample}")
+            if reconciliation.get("conflicts"):
+                sample = "、".join(f"{item['refdes']}({item['field']})"
+                                  for item in reconciliation["conflicts"][:10])
+                print(f"    属性冲突: {sample}")
+        for item in bundle["unmatched_brd"] + bundle["unmatched_bom"]:
+            print(f"  [未配对] {item['name']}: {item['reason']}")
+        if bundle["warnings"]:
+            print("-" * 78)
+            for warning in bundle["warnings"]:
+                print(f"  ! {warning}")
+        files = write_report(bundle, out_dir)
+        print("-" * 78)
+        print("  报告:")
+        for key in ("xlsx", "txt", "html", "json"):
+            print(f"    {key.upper():<5} {files[key]}")
+        if bundle["verdict"] == "fail":
+            sys.exit(1)
+        return
+
     if args.input_project:
-        import json
         from src.design_inputs import load_project
         try:
-            project = load_project(args.input_project, args.supplements)
+            supplements = list(args.supplements)
+            if args.bom:
+                supplements.append(("bom", args.bom))
+            project = load_project(args.input_project, supplements)
+            for check in project.get("bom_checks") or []:
+                rec = check["reconciliation"]
+                s = rec["summary"]
+                print(f"BOM 核对 {rec['status']}: BRD {s['brd_count']} / BOM {s['bom_count']} / "
+                      f"匹配 {s['matched_count']} / BOM 漏项 {s['missing_in_bom_count']} / "
+                      f"BOM 多出 {s['missing_in_brd_count']} / 属性冲突 {s['conflict_count']}")
+                if rec["missing_in_bom"]:
+                    refs = "、".join(item["refdes"] for item in rec["missing_in_bom"][:10])
+                    print("  BOM 漏项示例:", refs)
+                if rec["missing_in_brd"]:
+                    refs = "、".join(item["refdes"] for item in rec["missing_in_brd"][:10])
+                    print("  BOM 多出示例:", refs)
             content = json.dumps(project, ensure_ascii=False, indent=2)
             if args.input_json:
                 with open(args.input_json, "w", encoding="utf-8") as f:
@@ -634,7 +728,7 @@ Examples:
             board_type=args.board_type,
             level=args.capability,
             copper_um=args.copper,
-            copper_oz=args.copper_oz if args.copper_oz is not None else 1.0,
+            copper_oz=args.copper_oz,
             checker=args.checker,
             demo=demo or (not args.brd and not args.nets),
             log=lambda text, tag=None: print(text),

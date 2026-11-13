@@ -5,6 +5,7 @@
 """
 import json
 import os
+import tempfile
 
 
 def prefs_path() -> str:
@@ -25,10 +26,20 @@ def load_prefs() -> dict:
 
 def save_prefs(data: dict) -> None:
     """保存界面偏好: 目录不存在时创建; 失败静默。"""
+    temporary = None
     try:
         path = prefs_path()
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=os.path.dirname(path),
+                                         prefix=".prefs-", suffix=".tmp", delete=False) as f:
+            temporary = f.name
             json.dump(data, f, ensure_ascii=False, indent=2)
-    except OSError:
+        os.replace(temporary, path)
+    except (OSError, TypeError, ValueError):
         pass
+    finally:
+        if temporary and os.path.exists(temporary):
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass

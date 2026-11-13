@@ -740,4 +740,3 @@ def open_net_locate(master, brd_path: str = "", out_dir: str = "", files=None):
     except Exception:  # noqa: BLE001
         pass
     return dialog
-    return dialog

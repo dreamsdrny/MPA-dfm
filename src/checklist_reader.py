@@ -121,7 +121,7 @@ def read_checklist_excel(excel_path: str) -> dict:
             continue
 
         try:
-            item_no = int(no_val)
+            item_no = int(float(no_val))
         except (ValueError, TypeError):
             continue
 
@@ -225,7 +225,9 @@ def read_checklist_excel(excel_path: str) -> dict:
 
 
 def merge_checklist_with_defaults(checklist_rules: dict, default_rules: dict) -> dict:
-    merged = dict(default_rules)
+    import copy
+
+    merged = copy.deepcopy(default_rules)
     extracted = checklist_rules.get("rules", {})
 
     for category in extracted:

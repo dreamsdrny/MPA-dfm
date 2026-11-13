@@ -5,8 +5,9 @@
     1. 先在前 N 行里找"表头行" —— 同一行能匹配到最多的已知列名;
     2. 再按列名别名(类别/编号/条目内容...)确定每一列的位置;
     3. 实在找不到表头, 才退回旧模板的固定列, 并给出警告。
-
-列名别名与表头扫描范围都在 config/checklist_auto_rules.yaml 里, 不用改代码。
+  Checklist 自动填写的判定大脑（规则引擎）：它把 YAML 里配置的"规则"和流水线产出的"事实"接起来，
+  按条目文字内容匹配规则、按规则里的判据给出 PASS/FAIL/MANUAL/N/A/VERIFY 结论和可读原因
+  列名别名与表头扫描范围都在 config/checklist_auto_rules.yaml 里, 不用改代码。
 """
 import os
 import re
@@ -78,6 +79,14 @@ def default_config_path() -> str:
     return DEFAULT_CONFIG
 
 
+def _as_positive_int(value, default: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return number if number > 0 else default
+
+
 def load_config(path: str = None) -> dict:
     """读 rules yaml; 失败时返回内置默认 (保证界面不因配置缺失报错)。"""
     import yaml
@@ -92,8 +101,11 @@ def load_config(path: str = None) -> dict:
         except Exception:  # noqa: BLE001  配置写错也不能让界面崩
             conf = {}
     tmpl = conf.get("template") or {}
+    if not isinstance(tmpl, dict):
+        tmpl = {}
     columns = dict(BUILTIN_COLUMN_ALIASES)
-    for key, aliases in (tmpl.get("columns") or {}).items():
+    configured = tmpl.get("columns")
+    for key, aliases in (configured.items() if isinstance(configured, dict) else ()):
         # yaml 里裸写的 no/yes/on/off 会被解析成布尔, 这里统一转回字符串
         key = str(key).lower()
         if isinstance(aliases, list) and aliases:
@@ -104,7 +116,7 @@ def load_config(path: str = None) -> dict:
         "rules": conf.get("rules") or [],
         "sheet_candidates": [str(s).lower() for s in
                              (tmpl.get("sheet_candidates") or ["check list", "checklist"])],
-        "header_scan_rows": int(tmpl.get("header_scan_rows") or 15),
+        "header_scan_rows": _as_positive_int(tmpl.get("header_scan_rows"), 15),
         "columns": columns,
         "required": [str(k) for k in (tmpl.get("required") or ["no", "items", "check"])],
     }

@@ -11,6 +11,7 @@ BRD-AI: DFM制程能力校验 (Module 4)
   - analyze_design(): DFM 功能分析 (设计参数 -> 制程能力比对报告)
 """
 import os
+import math
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
@@ -122,7 +123,8 @@ def _num(value) -> Optional[float]:
     if value is None:
         return None
     try:
-        return float(value)
+        number = float(value)
+        return number if math.isfinite(number) else None
     except (TypeError, ValueError):
         return None
 
@@ -158,7 +160,7 @@ def get_line_spacing_capability(capability: dict, copper_um: float = 35.0) -> Tu
         hi = row.get("copper_max_um", 1e9)
         if lo <= copper_um <= hi:
             return _num(row.get("line_um")), _num(row.get("space_um"))
-        if best is None and copper_um > hi:
+        if copper_um > hi:
             best = row
     if best is None:
         best = table[-1]
@@ -528,6 +530,10 @@ def analyze_design(design: dict, board_type: str = "rigid",
 
     # ---- 器件清单 (Part.xml 位号) ----
     comps = design.get("_components") or {}
+    if isinstance(comps, (list, tuple)):
+        refs = [str(c.get("ref") or c.get("refdes") or "") if isinstance(c, dict) else str(c)
+                for c in comps]
+        comps = {"ok": bool(refs), "count": len(refs), "refdes": [r for r in refs if r]}
     if comps:
         if comps.get("ok"):
             sample = "、".join(comps["refdes"][:8]) + ("…" if comps["count"] > 8 else "")
@@ -882,6 +888,8 @@ def analyze_design(design: dict, board_type: str = "rigid",
         result["issues"] = report["issues"]
         result["issue_summary"] = report["issue_summary"]
         result["risk"] = report["risk"]
+        if not result["releasable"]:
+            result["risk"]["verdict"] = result["verdict"]
         result["info_stats"] = report["info"]
     except Exception as exc:  # noqa: BLE001
         result["issues"] = []
@@ -932,8 +940,8 @@ def validate_constraints(constraints: dict, capability_level: str = "standard",
 
     # ---- 物理约束: 线宽 ----
     for phys in constraints.get("physical_constraints", []):
-        w_min = phys.get("width_min", 0)
-        if min_line is None:
+        w_min = _num(phys.get("width_min"))
+        if min_line is None or w_min is None:
             continue
         if w_min < min_line:
             errors.append(
@@ -949,8 +957,8 @@ def validate_constraints(constraints: dict, capability_level: str = "standard",
         if min_spacing is None:
             break
         for key in ["line_to_line", "line_to_pin", "line_to_via"]:
-            val = spc.get(key, 0)
-            if isinstance(val, str):
+            val = _num(spc.get(key))
+            if val is None:
                 continue
             if val < min_spacing:
                 errors.append(
@@ -959,12 +967,16 @@ def validate_constraints(constraints: dict, capability_level: str = "standard",
 
     # ---- 过孔约束 ----
     for via in constraints.get("via_constraints", []):
-        drill = via.get("drill", 0)
+        drill = _num(via.get("drill"))
+        if drill is None:
+            continue
         if min_mech_drill is not None and drill < min_mech_drill:
             errors.append(
                 f"[{via['name']}] 钻孔 {drill}mm < 制程能力 {min_mech_drill}mm"
             )
-        pad = via.get("pad", 0)
+        pad = _num(via.get("pad"))
+        if pad is None:
+            continue
         annular = (pad - drill) / 2
         if ann_mech_mm is not None and annular < ann_mech_mm:
             errors.append(

@@ -14,10 +14,11 @@ for %%P in (MPA_DFM.exe) do (
 )
 timeout /t 2 /nobreak >nul
 
-pip show pyinstaller >nul 2>&1
+python -m pip show pyinstaller >nul 2>&1
 if %errorlevel% neq 0 (
     echo Installing PyInstaller...
-    pip install pyinstaller
+    python -m pip install pyinstaller
+    if errorlevel 1 goto failed
 )
 
 echo.

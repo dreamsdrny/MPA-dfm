@@ -3,6 +3,7 @@
 只依赖 tkinter, 不含业务逻辑。目标是让 tkinter 界面接近现代桌面工具的观感:
 深色页眉 + 浅灰底 + 白色卡片 + 蓝色主操作 + 深色日志区。
 """
+import os
 import sys
 import tkinter as tk
 from tkinter import font as tkfont
@@ -29,6 +30,37 @@ COLORS = {
     "status_bg": "#E8EDF6",
     "row_alt": "#F8FAFC",
 }
+LIGHT_COLORS = dict(COLORS)
+DARK_COLORS = dict(LIGHT_COLORS, bg="#111827", card="#1F2937", border="#374151", text="#E5E7EB",
+    muted="#AAB5C5", faint="#8795AB", primary="#3B82F6", primary_dark="#93C5FD",
+    primary_soft="#253A5B", success="#4ADE80", warn="#FBBF24", danger="#F87171",
+    status_bg="#263247", row_alt="#273449", log_bg="#0B1220", log_fg="#CBD5E1")
+
+
+def set_color_mode(mode):
+    old = dict(COLORS)
+    COLORS.update(DARK_COLORS if mode == "dark" else LIGHT_COLORS)
+    return old
+
+
+def refresh_widget_colors(root, old):
+    """Recolor existing native Tk widgets; preserve custom semantic foregrounds."""
+    replacements = {value.lower(): COLORS[key] for key, value in old.items()}
+    replacements.update({"#ffffff": COLORS["card"], "white": COLORS["card"],
+                         "#f1f5fb": COLORS["row_alt"], "black": COLORS["text"]})
+    def walk(widget):
+        if not isinstance(widget, ttk.Widget):
+            for option in ("background", "foreground", "highlightbackground", "insertbackground"):
+                try:
+                    color = str(widget.cget(option)).lower()
+                    if color in replacements:
+                        widget.configure(**{option: replacements[color]})
+                except tk.TclError:
+                    pass
+        for child in widget.winfo_children():
+            walk(child)
+    walk(root)
+    apply_theme(root)
 
 # 优先使用系统中文字体, 缺失时退回 Tk 默认字体
 _FONT_CANDIDATES = ("Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC",
@@ -75,6 +107,18 @@ def enable_dpi_awareness() -> None:
         return
     try:
         import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Evan.MPA_DFM.Gerber.20261113")
+    except (AttributeError, OSError):
+        pass
+    try:
+        import ctypes
+        # Windows 10: Per-Monitor V2; older systems fall back to shcore.
+        if ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+            return
+    except (AttributeError, OSError):
+        pass
+    try:
+        import ctypes
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
     except Exception:  # noqa: BLE001
         try:
@@ -82,6 +126,62 @@ def enable_dpi_awareness() -> None:
             ctypes.windll.user32.SetProcessDPIAware()
         except Exception:  # noqa: BLE001
             pass
+
+
+def apply_app_icon(root) -> None:
+    """Use the bundled Evan icon for window chrome, Alt-Tab and taskbar."""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+    try:
+        root.iconbitmap(os.path.join(base, "evan.ico"))
+        root.iconbitmap(default=os.path.join(base, "evan.ico"))
+        if sys.platform == "win32":
+            root.after_idle(lambda: _native_window_icons(root, os.path.join(base, "evan.ico")))
+    except tk.TclError:
+        try:
+            name = "evan_taskbar.png" if os.path.isfile(os.path.join(base, "evan_taskbar.png")) else "evan.png"
+            image = tk.PhotoImage(master=root, file=os.path.join(base, name))
+            root.iconphoto(True, image)
+            root._evan_icon = image
+        except tk.TclError:
+            pass
+
+
+def _native_window_icons(root, path):
+    """Load native small/large ICO frames for the window's actual DPI."""
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+    user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+    user32.GetAncestor.restype = wintypes.HWND
+    user32.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT,
+                                  ctypes.c_int, ctypes.c_int, wintypes.UINT]
+    user32.LoadImageW.restype = wintypes.HANDLE
+    user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user32.SendMessageW.restype = wintypes.LPARAM
+    user32.DestroyIcon.argtypes = [wintypes.HANDLE]
+    try:
+        hwnd = user32.GetAncestor(root.winfo_id(), 2) or root.winfo_id()
+        try:
+            user32.GetDpiForWindow.argtypes = [wintypes.HWND]
+            dpi = user32.GetDpiForWindow(hwnd) or 96
+            sizes = [user32.GetSystemMetricsForDpi(metric, dpi) for metric in (49, 11)]
+        except AttributeError:
+            sizes = [user32.GetSystemMetrics(metric) for metric in (49, 11)]
+        handles = []
+        for kind, size in enumerate(sizes):
+            icon = user32.LoadImageW(None, path, 1, size, size, 0x10)
+            if icon:
+                user32.SendMessageW(hwnd, 0x80, kind, icon)
+                handles.append(icon)
+        root._native_evan_icons = handles
+
+        def release(event):
+            if event.widget is root:
+                for handle in handles:
+                    user32.DestroyIcon(handle)
+        root.bind("<Destroy>", release, add="+")
+    except (tk.TclError, OSError):
+        pass
 
 
 def apply_theme(root) -> ttk.Style:
@@ -148,19 +248,19 @@ def apply_theme(root) -> ttk.Style:
               foreground=[("active", COLORS["primary_dark"])])
 
     # ---- 输入控件 ----
-    style.configure("TEntry", fieldbackground="#FFFFFF", foreground=text,
+    style.configure("TEntry", fieldbackground=card, foreground=text,
                     bordercolor=border, lightcolor=border, darkcolor=border,
                     padding=(6, 5), insertcolor=text)
     style.map("TEntry", bordercolor=[("focus", COLORS["primary"])])
-    style.configure("TCombobox", fieldbackground="#FFFFFF", foreground=text,
-                    background="#FFFFFF", bordercolor=border,
+    style.configure("TCombobox", fieldbackground=card, foreground=text,
+                    background=card, bordercolor=border,
                     lightcolor=border, darkcolor=border,
                     arrowcolor=muted, padding=(6, 4))
     style.map("TCombobox",
               bordercolor=[("focus", COLORS["primary"])],
-              fieldbackground=[("readonly", "#FFFFFF")],
+              fieldbackground=[("readonly", card)],
               foreground=[("readonly", text)])
-    root.option_add("*TCombobox*Listbox.background", "#FFFFFF")
+    root.option_add("*TCombobox*Listbox.background", card)
     root.option_add("*TCombobox*Listbox.foreground", text)
     root.option_add("*TCombobox*Listbox.selectBackground", COLORS["primary_soft"])
     root.option_add("*TCombobox*Listbox.selectForeground", COLORS["primary_dark"])
@@ -179,7 +279,7 @@ def apply_theme(root) -> ttk.Style:
     style.configure("Treeview", background=card, fieldbackground=card,
                     foreground=text, rowheight=27, font=f["ui"],
                     bordercolor=border, borderwidth=0)
-    style.configure("Treeview.Heading", background="#EFF3FA", foreground=muted,
+    style.configure("Treeview.Heading", background=COLORS["row_alt"], foreground=muted,
                     font=f["small"], relief="flat", padding=(8, 7))
     style.map("Treeview", background=[("selected", COLORS["primary_soft"])],
               foreground=[("selected", COLORS["primary_dark"])])
@@ -187,7 +287,7 @@ def apply_theme(root) -> ttk.Style:
 
     # ---- 选项卡 ----
     style.configure("TNotebook", background=bg, borderwidth=0, tabmargins=(0, 0, 0, 0))
-    style.configure("TNotebook.Tab", background="#E6EBF4", foreground=muted,
+    style.configure("TNotebook.Tab", background=COLORS["status_bg"], foreground=muted,
                     font=f["ui"], padding=(18, 8), borderwidth=0)
     style.map("TNotebook.Tab",
               background=[("selected", card)],
@@ -195,6 +295,11 @@ def apply_theme(root) -> ttk.Style:
 
     # ---- 分隔线 ----
     style.configure("Card.TSeparator", background=border)
+    for name, color in (("Running", COLORS["success"]), ("Complete", COLORS["primary"]),
+                        ("Idle", COLORS["faint"])):
+        style.configure(name + ".Horizontal.TProgressbar", background=color,
+                        troughcolor=COLORS["border"], borderwidth=0,
+                        lightcolor=color, darkcolor=color)
 
     return style
 

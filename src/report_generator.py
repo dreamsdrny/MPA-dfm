@@ -189,7 +189,7 @@ def generate_excel_report(
                     style_data(ws_chk, row, len(headers))
                     row += 1
 
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     wb.save(output_path)
     return output_path
 
@@ -250,7 +250,7 @@ def generate_text_report(
     lines.append("=" * 60)
 
     content = "\n".join(lines)
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(content)
     return output_path

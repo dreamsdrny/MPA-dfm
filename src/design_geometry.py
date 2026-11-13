@@ -53,7 +53,11 @@ def _load_snapshot_cached(key):
         return None
     try:
         zf = zipfile.ZipFile(io.BytesIO(raw[idx:]))
-        name = zf.namelist()[0]
+        names = zf.namelist()
+        name = next((n for n in names if n.lower().endswith(".json")
+                     and "design" in n.lower()), names[0] if names else "")
+        if not name:
+            return None
         text = zf.read(name).decode("utf-8", "replace")
         doc = json.loads(text)
     except (zipfile.BadZipFile, IndexError, ValueError, OSError):
@@ -88,10 +92,10 @@ def _polyline(seg: dict) -> List[Tuple[float, float]]:
     """
     pts = [(float(p["x"]), float(p["y"]))
            for p in (seg.get("points") or [])
-           if isinstance(p, dict) and p.get("x") is not None]
+            if isinstance(p, dict) and p.get("x") is not None and p.get("y") is not None]
     end = [(float(p["x"]), float(p["y"]))
            for p in (seg.get("endpts") or [])
-           if isinstance(p, dict) and p.get("x") is not None]
+            if isinstance(p, dict) and p.get("x") is not None and p.get("y") is not None]
     if len(end) == 2 and pts:      # 圆弧: 绕圆心从起点扫到终点
         cx, cy = pts[0]
         (x0, y0), (x1, y1) = end
@@ -163,10 +167,10 @@ def _endpoints(seg: dict) -> Optional[Tuple[Tuple[float, float], Tuple[float, fl
     """取一段图形的两个端点 (圆弧用 endpts, 直线用 points 首尾), 取不到返回 None。"""
     pts = [(float(p["x"]), float(p["y"]))
            for p in (seg.get("points") or [])
-           if isinstance(p, dict) and p.get("x") is not None]
+            if isinstance(p, dict) and p.get("x") is not None and p.get("y") is not None]
     end = [(float(p["x"]), float(p["y"]))
            for p in (seg.get("endpts") or [])
-           if isinstance(p, dict) and p.get("x") is not None]
+            if isinstance(p, dict) and p.get("x") is not None and p.get("y") is not None]
     if len(end) == 2:
         return end[0], end[1]
     if len(pts) >= 2:
@@ -333,9 +337,15 @@ def board_outline(doc: dict, draw_extents_mil: Optional[dict] = None) -> Dict[st
             dx = float(draw_extents_mil["maxx"]) - float(draw_extents_mil["minx"])
             dy = float(draw_extents_mil["maxy"]) - float(draw_extents_mil["miny"])
             if dx > 0 and dy > 0:
-                # 单位换算: mil -> mm
-                scale_x = dx * 0.0254 / span_x
-                scale_y = dy * 0.0254 / span_y
+                unit = str(draw_extents_mil.get("unit") or "mil").lower()
+                if unit.startswith("inch"):
+                    factor = 25.4
+                elif unit.startswith("mm") or unit.startswith("millimeter"):
+                    factor = 1.0
+                else:
+                    factor = 0.0254
+                scale_x = dx * factor / span_x
+                scale_y = dy * factor / span_y
                 method = "draw_size"
         except (KeyError, TypeError, ValueError):
             scale_x = scale_y = None

@@ -229,6 +229,10 @@ def evaluate(rule: dict, facts: dict) -> dict:
             return {**base, "status": PASS,
                     "reason": _fmt(rule["pass"] or item.get("message", ""), facts) + " (接近能力极限)",
                     "evidence": {"dfm_item": item.get("item"), "dfm_status": status}}
+        if status == "info":
+            return {**base, "status": MANUAL,
+                    "reason": _fmt(rule["missing"] or item.get("message", ""), facts),
+                    "evidence": {"dfm_item": item.get("item"), "dfm_status": status}}
         return {**base, "status": FAIL,
                 "reason": _fmt(rule["fail"] or item.get("message", ""), facts),
                 "evidence": {"dfm_item": item.get("item"), "dfm_status": status}}

@@ -10,6 +10,7 @@ BRD-AI: DFM 报告生成器
   - 文本 DFM 报告 (*.txt)
 """
 import os
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -18,6 +19,7 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 from src.dfm_rules import SEVERITY_LEVELS, SEVERITY_COLOR, SEVERITY_ORDER
+from src.pcb_locations import LOCATION_HEADERS, location_values, COMPONENT_HEADERS, component_values
 
 
 def _thin_border():
@@ -32,7 +34,42 @@ def _fmt(value: Any) -> str:
         return ""
     if isinstance(value, float):
         return f"{value:.4g}"
-    return str(value)
+    return _ILLEGAL_CELL_RE.sub("", str(value))[:32000]
+
+
+_ILLEGAL_CELL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _sanitize_workbook(wb) -> None:
+    """Remove control chars / force literal strings so openpyxl cannot fail or run formulas."""
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for cell in row:
+                if not isinstance(cell.value, str):
+                    continue
+                text = _ILLEGAL_CELL_RE.sub("", cell.value)[:32000]
+                if text != cell.value:
+                    cell.value = text
+                if text.startswith("="):
+                    cell.data_type = "s"
+
+
+def _clean_value(value):
+    if isinstance(value, str):
+        return _ILLEGAL_CELL_RE.sub("", value)[:32000]
+    if isinstance(value, dict):
+        return {k: _clean_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_clean_value(v) for v in value]
+    return value
+
+
+def _components_dict(value) -> dict:
+    if isinstance(value, (list, tuple)):
+        return {"ok": bool(value), "count": len(value),
+                "refdes": [str(c.get("ref") or c.get("refdes") or "") if isinstance(c, dict) else str(c)
+                           for c in value]}
+    return value if isinstance(value, dict) else {}
 
 
 def _write_kv(ws, start_row, col, pairs, key_font=None, border=None):
@@ -50,13 +87,57 @@ def _write_kv(ws, start_row, col, pairs, key_font=None, border=None):
 
 def build_dfm_workbook(analysis: dict, board_meta: Optional[dict] = None):
     """Build the PCB workbook in memory, reusable by the combined DFM report."""
-    board_meta = board_meta or {}
+    analysis = _clean_value(analysis or {})
+    board_meta = _clean_value(board_meta or {})
     issues: List[dict] = analysis.get("issues", [])
     risk = analysis.get("risk", {})
     info_stats = analysis.get("info_stats", {})
     summary = analysis.get("issue_summary", {})
 
     wb = openpyxl.Workbook()
+    component_sheet = wb.create_sheet("BRD器件坐标")
+    component_sheet.append(COMPONENT_HEADERS)
+    for component in analysis.get("component_coordinates", []):
+        component_sheet.append(component_values(component))
+    component_sheet.freeze_panes = "A2"
+    component_sheet.auto_filter.ref = component_sheet.dimensions
+    for column in component_sheet.columns:
+        component_sheet.column_dimensions[column[0].column_letter].width = 24
+    coordinate_sheet = wb.create_sheet("问题坐标")
+    coordinate_sheet.append(LOCATION_HEADERS)
+    for coordinate in analysis.get("problem_locations", []):
+        coordinate_sheet.append(location_values(coordinate))
+    coordinate_sheet.freeze_panes = "A2"
+    coordinate_sheet.auto_filter.ref = coordinate_sheet.dimensions
+    for cell in coordinate_sheet[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="2F5496")
+    for i in range(1, len(LOCATION_HEADERS) + 1):
+        coordinate_sheet.column_dimensions[get_column_letter(i)].width = 22 if i < 19 else 90
+    source_sheet = wb.create_sheet("坐标说明与来源")
+    source_sheet.append(["坐标口径", analysis.get("coordinate_note", "未提供对象级坐标来源")])
+    source_sheet.append(["BRD设计单位", analysis.get("coordinate_unit", "未知")])
+    source_sheet.append(["报告筛选", analysis.get("report_filter_note", "显示全部优先级")])
+    for error in analysis.get("gerber_errors", []):
+        source_sheet.append(["Gerber检查缺失", error])
+    for layer in analysis.get("gerber_layers", []):
+        source_sheet.append([layer.get("role"), layer.get("path"), layer.get("objects")])
+    source_sheet.append(["来源文件", "类型", "条数", "单位"])
+    for source in analysis.get("coordinate_sources", []):
+        source_sheet.append([source.get("file"), source.get("kind"), source.get("count"), source.get("unit")])
+    for error in analysis.get("coordinate_errors", []):
+        source_sheet.append(["解析问题", error])
+    source_sheet.column_dimensions["A"].width = 35
+    source_sheet.column_dimensions["B"].width = 110
+    capability_sheet = wb.create_sheet("逐项能力")
+    capability_keys = ("category", "item", "design", "capability", "unit", "status", "message", "source", "note")
+    capability_sheet.append(["类别", "检查项", "输入值", "能力值", "单位", "状态", "依据", "来源", "备注"])
+    for item in analysis.get("items", []):
+        capability_sheet.append([item.get(key) for key in capability_keys])
+    capability_sheet.freeze_panes = "A2"
+    capability_sheet.auto_filter.ref = capability_sheet.dimensions
+    for col in capability_sheet.columns:
+        capability_sheet.column_dimensions[col[0].column_letter].width = 26
     border = _thin_border()
     title_font = Font(name="Arial", size=14, bold=True)
     header_font = Font(name="Arial", size=10, bold=True, color="FFFFFF")
@@ -86,7 +167,7 @@ def build_dfm_workbook(analysis: dict, board_meta: Optional[dict] = None):
                                    f"能力等级: {analysis.get('capability_label','')}")
     ws.cell(row=3, column=2, value=f"铜厚: {_fmt(analysis.get('copper_um'))}um")
 
-    comps = analysis.get("components") or {}
+    comps = _components_dict(analysis.get("components"))
     holes = analysis.get("holes") or {}
     if comps.get("ok"):
         cats = comps.get("by_category") or {}
@@ -102,10 +183,11 @@ def build_dfm_workbook(analysis: dict, board_meta: Optional[dict] = None):
     ws.cell(row=5, column=2, value="单板信息").font = section_font
     board_pairs = [
         ("客户名", board_meta.get("customer", "")),
-        ("单板名", board_meta.get("board_name", "")),
+        ("单板名", board_meta.get("board_name") or analysis.get("board_name", "")),
         ("单板版本", board_meta.get("version", "")),
         ("装配名", board_meta.get("assembly_name", "")),
         ("规则集", board_meta.get("rule_set", "")),
+        ("报告显示", analysis.get("report_filter_note", "全部优先级")),
         ("EDA同步工具", board_meta.get("eda_tool", "Cadence Allegro")),
         ("提交时间", board_meta.get("submit_time", "")),
         ("完成时间", board_meta.get("finish_time", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))),
@@ -298,7 +380,7 @@ def build_dfm_workbook(analysis: dict, board_meta: Optional[dict] = None):
                 ws4.cell(row=r + 1 + i, column=1, value=w)
 
     # ==================== 器件清单 ====================
-    comps = analysis.get("components") or {}
+    comps = _components_dict(analysis.get("components"))
     if comps.get("ok") and comps.get("refdes"):
         wsc = wb.create_sheet("器件清单")
         wsc.cell(row=1, column=1, value=f"器件清单 (共 {comps['count']} 个)").font = title_font
@@ -317,6 +399,7 @@ def build_dfm_workbook(analysis: dict, board_meta: Optional[dict] = None):
             wsc.cell(row=4 + idx, column=2, value=ref).border = border
             wsc.cell(row=4 + idx, column=3, value=prefix_cat.get(_refdes_prefix(ref), "")).border = border
 
+    _sanitize_workbook(wb)
     return wb
 
 
@@ -344,16 +427,18 @@ def generate_dfm_text(analysis: dict, output_path: str,
     issues = analysis.get("issues", [])
     risk = analysis.get("risk", {})
     lines = []
+    if analysis.get("report_filter_note"):
+        lines.append(analysis["report_filter_note"])
     lines.append("=" * 70)
     lines.append("  DFM 制程能力分析报告")
     lines.append("=" * 70)
     lines.append(f"  板厂: {analysis.get('factory_label','')}    "
                  f"板类型: {analysis.get('board_type_label','')}    "
                  f"能力等级: {analysis.get('capability_label','')}")
-    lines.append(f"  板名: {board_meta.get('board_name', analysis.get('board_type_label',''))}    "
+    lines.append(f"  板名: {board_meta.get('board_name') or analysis.get('board_name') or '未命名'}    "
                  f"铜厚: {_fmt(analysis.get('copper_um'))}um")
     lines.append(f"  生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    comps = analysis.get("components") or {}
+    comps = _components_dict(analysis.get("components"))
     holes = analysis.get("holes") or {}
     if comps.get("ok"):
         cats = comps.get("by_category") or {}

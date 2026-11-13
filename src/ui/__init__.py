@@ -12,9 +12,12 @@
       dfm_params.py   DFM 对话框左栏: 参数表单
     dfm_results.py  DFM 对话框右栏: 结果表格 (制程能力 / Layout 规则)
     dfm_dialog.py   界面二主窗口 (可独立运行, 自己导入 BRD)
+    analyze_dialog.py  界面三: BRD 分析与输出 (8 大类能力)
+    store_dialog.py    界面四: BRD ↔ BOM 资料库联动检查 (store-brd / store-bom)
 
 业务逻辑不在这里: 填写 Checklist 走 ``src/checklist_pipeline.py``,
-BRD/DFM 分析走 ``src/dfm_engine.py``, 界面只负责传参和展示。
+BRD/DFM 分析走 ``src/dfm_engine.py``, BRD/BOM 联动检查走
+``src/design_inputs/store.py``, 界面只负责传参和展示。
 
 对外导出采用延迟加载: 只 import ``src.ui.prefs`` 之类的子模块时,
 不会连带把 tkinter 与整个界面栈拉起来。

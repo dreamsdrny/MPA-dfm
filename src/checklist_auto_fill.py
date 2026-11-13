@@ -3,30 +3,64 @@
 模板结构由 checklist_template 识别 (列名别名), 判定由 checklist_auto_rules 完成
 (按条目文字匹配, 不依赖序号), 所以换一版 checklist.xlsx 通常不用改代码。
 """
+# 导入操作系统接口模块，用于文件路径处理等
 import os
+
+# 导入日期时间模块，用于生成时间戳
 from datetime import datetime
 
+# 导入 openpyxl 库，用于读写 Excel 文件
 import openpyxl
+# 从 openpyxl 导入样式相关类，用于设置单元格格式
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
+# 导入检查规则相关函数和常量
+# MANUAL: 需人工检查, NA: 不适用, VERIFY: 需复核
+# build_facts: 构建设计事实, evaluate: 评估规则, load_rules: 加载规则, match_rule: 匹配规则
 from src.checklist_auto_rules import (MANUAL, NA, VERIFY, build_facts, evaluate,
                                       load_rules, match_rule)
+# 导入清单模板相关函数
+# load_config: 加载配置, read_template: 读取模板
 from src.checklist_template import load_config, read_template
 
+# ==================== 状态背景色定义 ====================
+# PASS 状态填充色：浅绿色
 PASS_FILL = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+# FAIL 状态填充色：浅红色
 FAIL_FILL = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+# WARN/VERIFY 状态填充色：浅黄色
 WARN_FILL = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+# MANUAL 状态填充色：浅蓝色
 MANUAL_FILL = PatternFill(start_color="D9E2F3", end_color="D9E2F3", fill_type="solid")
+# N/A 状态填充色：浅灰色
 NA_FILL = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
 
+# ==================== 单元格边框定义 ====================
+# 定义细线边框样式，用于表格单元格
 THIN_BORDER = Border(
     left=Side(style="thin"), right=Side(style="thin"),
     top=Side(style="thin"), bottom=Side(style="thin"),
 )
 
-STATUS_TEXT = {"PASS": "PASS", "FAIL": "FAIL", VERIFY: "VERIFY", MANUAL: "MANUAL", NA: "N/A"}
-STATUS_FILL = {"PASS": PASS_FILL, "FAIL": FAIL_FILL, VERIFY: WARN_FILL,
-               MANUAL: MANUAL_FILL, NA: NA_FILL}
+# ==================== 状态文本映射 ====================
+# 将内部状态标识映射为 Excel 中显示的文字
+STATUS_TEXT = {
+    "PASS": "PASS",       # 通过
+    "FAIL": "FAIL",       # 失败
+    VERIFY: "VERIFY",     # 需复核
+    MANUAL: "MANUAL",     # 需人工检查
+    NA: "N/A"             # 不适用
+}
+
+# ==================== 状态背景色映射 ====================
+# 将内部状态标识映射为对应的单元格填充样式
+STATUS_FILL = {
+    "PASS": PASS_FILL,    # 通过 → 绿色
+    "FAIL": FAIL_FILL,    # 失败 → 红色
+    VERIFY: WARN_FILL,    # 复核 → 黄色
+    MANUAL: MANUAL_FILL,  # 人工 → 蓝色
+    NA: NA_FILL           # 不适用 → 灰色
+}
 
 
 def decide_items(template: dict, facts: dict, rules: list) -> list:

@@ -300,6 +300,9 @@ def _connectivity_cap(ctx: Context, cap_id: str, keys, what: str) -> Result:
                     实测=it.get("actual"), 规则=it.get("required"))
         res.columns = ["类别", "层", "网络", "位置", "器件", "实测", "规则"]
         res.source(f"Allegro DRC 报告: {drc['source']}")
+        if not hits and drc.get("unrecognized_blocks"):
+            res.status = WARN
+            res.warn(f"报告有 {drc['unrecognized_blocks']} 个未识别块，不能确认没有 {what}")
         return res
 
     res = unavailable(cap,

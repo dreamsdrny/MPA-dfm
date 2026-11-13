@@ -15,11 +15,15 @@ Allegro 17.x 的 .brd 由「二进制数据库 + zip 归档」组成。zip 归�
 这里得到的是「设计声明值」, 不是实测几何: 图形数据在数据库里, 不做几何反算。
 每个结果都带 source / confidence, 供上层决定能不能直接用于 DFM 判定。
 """
+# 导入正则表达式模块
 import re
+# 导入类型注解相关类型
 from typing import Dict, List, Optional, Tuple
 
+# 模块公开接口，供外部调用
 __all__ = ["scan_brd_raw", "parse_via_name"]
 
+# 单位换算系数表：键为 brd 文件中的单位字符串，值为(换算为 mm 的乘数, 标准化单位名)
 _UNIT_FACTOR = {
     "MILS": (0.0254, "mil"),
     "MIL": (0.0254, "mil"),
@@ -30,23 +34,35 @@ _UNIT_FACTOR = {
     "INCH": (25.4, "inch"),
 }
 
-_UNIT_RE = re.compile(rb"ALL UNITS ARE IN\s+(MILS|MIL|MILLIMETERS|MILLIMETER|MM|INCHES|INCH)")
+# 匹配 brd 文件中单位声明行，如 "ALL UNITS ARE IN MILLIMETERS"
+_UNIT_RE = re.compile(
+    rb"ALL UNITS ARE IN\s+(MILLIMETERS|MILLIMETER|INCHES|INCH|MILS|MIL|MM)\b")
+# 匹配钻孔图表标题，提取图表名称（2~40字符）
 _DRILL_TITLE_RE = re.compile(rb"DRILL CHART:\s*([A-Za-z0-9_ ]{2,40})")
+# 匹配可打印 ASCII 文本（2~80字符），用于提取字符串内容
 _TEXT_RE = re.compile(rb"[\x20-\x7e]{2,80}")
 
+# 匹配公差格式，如 "+0.1/-0.1"
 _TOL_RE = re.compile(r"^[+-]\d+(?:\.\d+)?/[+-]\d+(?:\.\d+)?$")
+# 匹配小数格式，如 "12.34"
 _DEC_RE = re.compile(r"^\d{1,4}\.\d{1,4}$")
+# 匹配整数格式，2~6位数字
 _INT_RE = re.compile(r"^\d{2,6}$")
+# 匹配电镀类型标识，如 "PLAT"、"NON-PLAT"、"NPTH"、"PTH"（不区分大小写）
 _PLATE_RE = re.compile(r"^(?:PLAT|NON[-_ ]?PLAT|NPTH|PTH)", re.I)
 
+# 匹配层名，如 "L1_GND"、"L2_SIG" 等，提取层号
 _LAYER_RE = re.compile(
     rb"\bL(\d{1,2})_(?:GND|PWR|SIG|VCC|PLANE|INNER|SIGNAL|GROUND|POWER)\d*\b")
+# 匹配 QuickView 区域信息，提取边界坐标、名称、单位、精度、层数
 _QUICKVIEW_RE = re.compile(
     rb"MINX=(-?\d+)\|MINY=(-?\d+)\|MAXX=(-?\d+)\|MAXY=(-?\d+)[^\x00]{0,400}?"
     rb"(?:STRING=Name:\s*([^\r\n\x00|]{1,80}))?[^\x00]{0,400}?"
     rb"Units:\s*([A-Za-z]+)[^\x00]{0,200}?Accuracy:\s*(\d+)[^\x00]{0,200}?Layers:\s*(\d+)")
+# 匹配过孔命名格式：VIA<直径>D<钻孔>[A<公差>]，如 "VIA10D5A2"
 _VIA_RE = re.compile(
     r"\bVIA(\d+(?:\.\d+)?)D(\d+(?:\.\d+)?)(?:A(\d+(?:\.\d+)?))?", re.I)
+# 匹配任意过孔标记，如 "VIA10_20"、"VIA8MIL" 等
 _VIA_ANY_RE = re.compile(rb"\bVIA[0-9][0-9A-Za-z_.\-]{1,30}", re.I)
 # 另一种常见命名: VIA10-20 / VIA8_14 -> 钻孔-焊盘 (单位 mil)
 _VIA_DASH_RE = re.compile(r"^VIA(\d+(?:\.\d+)?)[-_](\d+(?:\.\d+)?)$", re.I)
@@ -60,17 +76,32 @@ def _clean(text: str) -> str:
 # 单位
 # --------------------------------------------------------------------------
 def _scan_units(raw: bytes) -> dict:
+    # 在原始二进制数据中搜索单位声明（如 "ALL UNITS ARE IN ..."）
     m = _UNIT_RE.search(raw)
+    
+    # 如果未匹配到任何单位声明，返回默认结果
     if not m:
-        return {"unit": None, "factor": None, "source": "未找到单位声明", "confidence": "low"}
+        return {
+            "unit": None,           # 未识别到单位
+            "factor": None,         # 未识别到换算因子
+            "source": "未找到单位声明",  # 数据来源说明
+            "confidence": "low"     # 置信度低
+        }
+    
+    # 提取匹配到的单位关键字，并转换为大写字符串
     key = m.group(1).decode("ascii", "ignore").upper()
+    
+    # 根据单位关键字查找对应的换算因子和标准单位名称
+    # 若未找到，则使用 (None, 原单位小写) 作为默认值
     factor, unit = _UNIT_FACTOR.get(key, (None, key.lower()))
+    
+    # 返回解析后的单位信息字典
     return {
-        "unit": unit,
-        "factor": factor,
-        "raw": m.group(0).decode("latin-1"),
-        "source": "二进制文本 'ALL UNITS ARE IN ...'",
-        "confidence": "high",
+        "unit": unit,               # 标准单位名称
+        "factor": factor,           # 单位换算因子（如需要）
+        "raw": m.group(0).decode("latin-1"),  # 原始匹配文本
+        "source": "二进制文本 'ALL UNITS ARE IN ...'",  # 数据来源
+        "confidence": "high",       # 置信度高
     }
 
 
@@ -79,23 +110,48 @@ def _scan_units(raw: bytes) -> dict:
 # --------------------------------------------------------------------------
 def _chart_windows(raw: bytes) -> List[Tuple[int, int, str]]:
     """返回 [(start, end, 标题)], 每个 DRILL CHART 到下一个 DRILL CHART 之间。"""
+    
+    # 在原始二进制数据中查找所有 DRILL CHART 标题的起始位置
     starts = [m.start() for m in _DRILL_TITLE_RE.finditer(raw)]
+    
+    # 如果未找到任何 DRILL CHART 标题，返回空列表
     if not starts:
         return []
+    
+    # 初始化结果列表
     out = []
+    
+    # 遍历每个 DRILL CHART 标题的起始偏移量
     for i, off in enumerate(starts):
+        # 确定当前 DRILL CHART 的结束位置：
+        # 如果有下一个 DRILL CHART，则结束位置为下一个的起始位置；
+        # 否则，限制最大窗口大小为起始位置 + 40000 字节
         end = min(starts[i + 1] if i + 1 < len(starts) else off + 40000, off + 40000)
+        
+        # 从当前偏移量开始匹配 DRILL CHART 标题正则
         m = _DRILL_TITLE_RE.match(raw, off)
+        
+        # 提取并清理标题文本；若匹配失败则使用空字符串
         title = _clean(m.group(1).decode("latin-1")) if m else ""
+        
+        # 将 (起始位置, 结束位置, 标题) 三元组加入结果列表
         out.append((off, end, title))
+    
+    # 返回所有 DRILL CHART 窗口信息
     return out
 
 
 def _parse_span(title: str) -> Tuple[str, str]:
-    """"TOP to BOTTOM" -> ("TOP", "BOTTOM")"""
+    """将 "TOP to BOTTOM" 解析为 ("TOP", "BOTTOM")"""
+    
+    # 使用不区分大小写的正则表达式，按 "to" 关键字分割标题字符串
     parts = re.split(r"\s+to\s+", title, flags=re.I)
+    
+    # 如果成功分割为两部分，分别去除首尾空白后返回
     if len(parts) == 2:
         return parts[0].strip(), parts[1].strip()
+    
+    # 否则，将整个标题作为第一部分返回，第二部分为空字符串
     return title.strip(), ""
 
 
@@ -190,7 +246,20 @@ def _scan_drill(raw: bytes) -> dict:
 
 # --------------------------------------------------------------------------
 # 过孔 / 焊盘栈
+# 预编译一个正则表达式对象，用于从字符串末尾提取过孔（VIA）连接的起止层编号
+# 匹配模式示例：VIA_L12-13、VIA_5_6、TOP_VIA-L3_L8 等
+# 捕获组1：起始层号（1~2位数字）
+# 捕获组2：结束层号（1~2位数字）
+# [_\-]          匹配一个下划线或连字符作为前缀分隔符
+# (?:L)?         可选的非捕获字母 L（常见于层标识）
+# (\d{1,2})      捕获 1~2 位数字作为层号
+# [-_]           匹配中间的分隔符（连字符或下划线）
+# (?:L)?         可选的非捕获字母 L
+# (\d{1,2})      捕获第二个层号
+# $              锚定字符串结尾，确保匹配发生在末尾
+# re.I           忽略大小写（对当前模式影响有限，但保持健壮性）
 # --------------------------------------------------------------------------
+
 _VIA_SPAN_RE = re.compile(r"[_\-](?:L)?(\d{1,2})[-_](?:L)?(\d{1,2})$", re.I)
 
 
@@ -395,7 +464,9 @@ def _scan_notes(raw: bytes) -> dict:
 
 
 # --------------------------------------------------------------------------
-# 入口
+# scan_brd_raw() 负责扫描 Allegro .brd 二进制文件
+# 提取图纸级设计信息（单位、层数、钻孔表、焊盘栈、备注等），并返回一份结构化的“设计元数据报告”
+# 未解析设计的 不解析走线、坐标、图形、反算尺寸 
 # --------------------------------------------------------------------------
 def scan_brd_raw(raw: bytes) -> dict:
     """扫描 .brd 二进制体, 返回原始设计量 (不含几何反算)。"""

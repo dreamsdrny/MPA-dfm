@@ -56,12 +56,16 @@ class TaskRunner:
                 (done if ok else failed)(value)
             except Exception:
                 import sys
-                self.widget.report_callback_exception(*sys.exc_info())
+                self.widget._root().report_callback_exception(*sys.exc_info())
             finally:
                 if self.alive:
-                    if finished:
-                        finished()
-                    self._notify()
+                    try:
+                        if finished:
+                            finished()
+                        self._notify()
+                    except Exception:
+                        import sys
+                        self.widget._root().report_callback_exception(*sys.exc_info())
             if not self.alive:
                 return
         self.poll_id = self.widget.after(50, self._poll)
@@ -73,6 +77,9 @@ class TaskRunner:
     def close(self):
         self.alive = False
         if self.poll_id is not None:
-            self.widget.after_cancel(self.poll_id)
+            try:
+                self.widget.after_cancel(self.poll_id)
+            except Exception:
+                pass
             self.poll_id = None
         self.pending.clear()

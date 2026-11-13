@@ -1,6 +1,6 @@
 """坐标清单与"不符合项定位"引擎 (无 tkinter 依赖)。
 
-.brd 本身只有约束与图形轮廓, 没有位号坐标、没有钻孔坐标。要回答
+.brd 数据库包含器件/孔位，但当前离线解析器不能解码这些对象坐标。要回答
 "0.199mm 的孔有几个、在哪" 和 "R100 在什么坐标", 必须有坐标来源:
 
     1) SKILL 导出 (推荐): PCB Editor 里跑 src/allegro_skill.py 生成的脚本,
@@ -18,6 +18,7 @@
     locate.scr      Allegro 脚本: 依次 zoom 到每个不符合位置 (可选)
 """
 import csv
+import math
 import os
 import re
 from typing import Dict, Iterable, List, Optional
@@ -52,11 +53,13 @@ def _to_mm(value: Optional[float], unit: str, dbu_per_unit: Optional[float],
            is_dbu: bool = False) -> Optional[float]:
     if value is None:
         return None
+    if not math.isfinite(value):
+        return None
     factor = _UNIT_MM.get((unit or "").strip().lower())
     if factor is None:
         return None
     if is_dbu:
-        if not dbu_per_unit:
+        if not dbu_per_unit or not math.isfinite(dbu_per_unit) or dbu_per_unit <= 0:
             return None
         return value / float(dbu_per_unit) * factor
     return value * factor
@@ -92,7 +95,7 @@ def parse_skill_csv(path: str) -> Dict[str, object]:
                 if not header:
                     header = [h.strip().upper() for h in line.split(",")]
                     continue
-                vals = [v.strip() for v in line.split(",")]
+                vals = [v.strip() for v in next(csv.reader([line]))]
                 rows.append(dict(zip(header, vals)))
     except OSError:
         return {"ok": False, "error": f"读不到 {os.path.basename(path)}"}
@@ -101,30 +104,30 @@ def parse_skill_csv(path: str) -> Dict[str, object]:
         return {"ok": False, "error": f"{os.path.basename(path)} 里没有数据行"}
 
     # 焊盘外框优先判定: 它同时带 PADSTACK 和 W_DBU/H_DBU, 不能当孔位读
-    is_pads = "W_DBU" in header and "H_DBU" in header
+    is_pads = ("W_DBU" in header and "H_DBU" in header) or ("W_UU" in header and "H_UU" in header)
     is_holes = (not is_pads) and "PADSTACK" in header
     items: List[dict] = []
     for r in rows:
         try:
-            x = float(r.get("X_DBU", ""))
-            y = float(r.get("Y_DBU", ""))
+            x = float(r.get("X_UU", r.get("X_DBU", "")))
+            y = float(r.get("Y_UU", r.get("Y_DBU", "")))
         except (TypeError, ValueError):
             continue
         entry = {
-            "x_mm": _to_mm(x, unit, dbu, is_dbu=True),
-            "y_mm": _to_mm(y, unit, dbu, is_dbu=True),
+            "x_mm": _to_mm(x, unit, dbu, is_dbu="X_UU" not in header),
+            "y_mm": _to_mm(y, unit, dbu, is_dbu="Y_UU" not in header),
             "source": f"SKILL 导出 ({os.path.basename(path)})",
         }
         if entry["x_mm"] is None or entry["y_mm"] is None:
             continue
         if is_pads:
             try:
-                w = float(r.get("W_DBU", ""))
-                h = float(r.get("H_DBU", ""))
+                w = float(r.get("W_UU", r.get("W_DBU", "")))
+                h = float(r.get("H_UU", r.get("H_DBU", "")))
             except (TypeError, ValueError):
                 continue
-            w_mm = _to_mm(w, unit, dbu, is_dbu=True)
-            h_mm = _to_mm(h, unit, dbu, is_dbu=True)
+            w_mm = _to_mm(w, unit, dbu, is_dbu="W_UU" not in header)
+            h_mm = _to_mm(h, unit, dbu, is_dbu="H_UU" not in header)
             if not w_mm or not h_mm:
                 continue
             entry.update({
@@ -138,10 +141,16 @@ def parse_skill_csv(path: str) -> Dict[str, object]:
                 "kind": "PIN",
             })
         elif is_holes:
+            try:
+                drill = _to_mm(float(r.get("DRILL_UU", "")), unit, dbu)
+            except (ValueError, TypeError):
+                drill = None
             entry.update({
                 "padstack": r.get("PADSTACK", ""),
                 "net": r.get("NET", ""),
-                "drill_mm": None,   # 由调用方用焊盘栈名解析后补
+                "drill_mm": drill if drill and drill > 0 else None,
+                "drill_source": "Allegro padstack drillDiameter" if drill else "",
+                "is_through": {"YES": True, "NO": False}.get(r.get("IS_THROUGH", "").upper()),
                 "kind": r.get("KIND", "VIA") or "VIA",
                 "refdes": r.get("REFDES", ""),
             })
@@ -171,6 +180,8 @@ def parse_placement_txt(path: str) -> Dict[str, object]:
     """
     unit = "mils"
     unit_from_file = False
+    comp_xy = False
+    warnings = []
     items: List[dict] = []
     try:
         with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
@@ -178,19 +189,48 @@ def parse_placement_txt(path: str) -> Dict[str, object]:
                 line = raw.strip()
                 if not line:
                     continue
+                declaration = re.match(r"(?:UUNITS|UNITS)\s*=\s*(\S+)", line, re.IGNORECASE)
+                if declaration:
+                    unit = declaration.group(1).lower()
+                    unit_from_file = True
+                    comp_xy = True
+                    continue
+                if "!" in line and not line.startswith(("#", ";")):
+                    values = [v.strip() for v in line.split("!")]
+                    if len(values) >= 6:
+                        try:
+                            if not unit_from_file:
+                                raise ValueError("COMP_XY 必须声明 UUNITS")
+                            ref, sx, sy, rot, mirror, footprint = values[:6]
+                            x, y = _to_mm(float(sx), unit, None), _to_mm(float(sy), unit, None)
+                            rotation = float(rot)
+                            if x is None or y is None or not math.isfinite(rotation):
+                                raise ValueError("未知单位或非有限数值")
+                            items.append(dict(refdes=ref, footprint=footprint, x_mm=x, y_mm=y,
+                                              rotation=rot, side="BOTTOM" if mirror.lower() in ("m", "yes", "true", "1") else "TOP",
+                                              embedded_layer=values[6] if len(values) > 6 else "",
+                                              source=f"COMP_XY ({os.path.basename(path)})"))
+                        except ValueError:
+                            warnings.append("无效坐标行: " + line[:100])
+                    continue
                 if line.startswith("#") or line.startswith(";"):
                     low = line.lower()
-                    for key, u in (("mils", "mils"), ("millimeter", "millimeters"),
-                                   ("inch", "inches")):
-                        if key in low and not unit_from_file:
+                    for key, u in ((r"\bmils?\b", "mils"), (r"\b(?:millimeters?|mm)\b", "millimeters"),
+                                   (r"\b(?:inches|inch)\b", "inches"), (r"\b(?:um|microns?)\b", "um")):
+                        if re.search(key, low) and not unit_from_file:
                             unit, unit_from_file = u, True
                     continue
                 m = _PLACE_RE.match(line)
                 if not m:
                     continue
                 ref, _footprint, sx, sy, rot, side = m.groups()
-                x = _to_mm(float(sx), unit, None)
-                y = _to_mm(float(sy), unit, None)
+                try:
+                    x = _to_mm(float(sx), unit, None)
+                    y = _to_mm(float(sy), unit, None)
+                    if x is None or y is None:
+                        continue
+                except ValueError:
+                    continue
                 items.append({"refdes": ref, "footprint": _footprint,
                               "x_mm": x, "y_mm": y,
                               "rotation": rot, "side": side.upper(),
@@ -201,7 +241,8 @@ def parse_placement_txt(path: str) -> Dict[str, object]:
     if not items:
         return {"ok": False, "error": "没有解析到元件行 (检查是否为 Allegro 的 place_txt.txt)"}
     return {"ok": True, "kind": "components", "items": items, "unit": unit,
-            "unit_from_file": unit_from_file, "source": os.path.basename(path)}
+            "unit_from_file": unit_from_file, "source": os.path.basename(path),
+            "format": "COMP_XY" if comp_xy else "placement", "warnings": warnings}
 
 
 # --------------------------------------------------------------------------- 读 Excellon
@@ -215,30 +256,50 @@ def parse_excellon(path: str) -> Dict[str, object]:
     支持 METRIC / M71 / INCH / M72 与 FILE_FORMAT=2:5 这类整数格式。
     """
     unit = "inches"
-    decimals = 0            # 0 = 坐标带小数点
+    decimals = None         # Unknown integer format must never be guessed.
+    integer_digits = None
+    suppression = "L"
     tools: Dict[int, float] = {}
     holes: List[dict] = []
     tool_no = None
+    x = y = None
+    errors = []
+
+    def coordinate(value):
+        if "." in value:
+            return float(value)
+        if decimals is None:
+            raise ValueError("整数坐标缺少 FILE_FORMAT 或单位行中的 000.000 格式声明")
+        sign = -1 if value.startswith("-") else 1
+        digits = value.lstrip("+-")
+        if suppression == "T" and integer_digits is not None:
+            digits = digits.ljust(integer_digits + decimals, "0")
+        return sign * int(digits) / 10.0 ** decimals
     try:
         with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
             for raw in f:
                 line = raw.strip()
-                if not line or line.startswith(";"):
+                if not line:
                     continue
                 up = line.upper()
+                m = re.search(r"FILE_FORMAT\s*=\s*(\d+)\s*:\s*(\d+)", up)
+                if m:
+                    integer_digits, decimals = int(m.group(1)), int(m.group(2))
+                    continue
+                if up.startswith(";"):
+                    continue
+                if up in ("G91", "ICI,ON"):
+                    return {"ok": False, "error": "暂不支持增量钻孔坐标，需导出绝对坐标"}
                 if up.startswith("M48"):
                     continue
                 if up.startswith("%") or up.startswith("M95"):
                     continue
-                if up in ("M71", "METRIC") or up.startswith("METRIC,"):
-                    unit = "millimeters"
-                    continue
-                if up in ("M72", "INCH") or up.startswith("INCH,"):
-                    unit = "inches"
-                    continue
-                m = re.search(r"FILE_FORMAT\s*=\s*(\d+)\s*:\s*(\d+)", up)
-                if m:
-                    decimals = int(m.group(2))
+                if up in ("M71", "M72", "METRIC", "INCH") or up.startswith(("METRIC,", "INCH,")):
+                    unit = "millimeters" if up.startswith("METRIC") or up == "M71" else "inches"
+                    suppression = "T" if ",TZ" in up else "L"
+                    fmt = re.search(r"(0+)\.(0+)", up)
+                    if fmt:
+                        integer_digits, decimals = len(fmt.group(1)), len(fmt.group(2))
                     continue
                 if up.startswith("M30") or up.startswith("M00"):
                     break
@@ -252,17 +313,19 @@ def parse_excellon(path: str) -> Dict[str, object]:
                 if up.startswith("T") and up[1:].strip().isdigit():
                     tool_no = int(up[1:].strip())
                     continue
-                m = _EXC_XY_RE.match(up)
+                m = re.fullmatch(r"(?:G0?5)?(?:X([+-]?[\d.]+))?(?:Y([+-]?[\d.]+))?", up)
                 if not m:
                     continue
                 try:
                     xs, ys = m.group(1), m.group(2)
-                    if decimals and "." not in xs and "." not in ys:
-                        scale = 10.0 ** decimals
-                        x, y = float(xs) / scale, float(ys) / scale
-                    else:
-                        x, y = float(xs), float(ys)
-                except ValueError:
+                    nx = coordinate(xs) if xs is not None else x
+                    ny = coordinate(ys) if ys is not None else y
+                    x, y = nx, ny
+                    if x is None or y is None or tool_no not in tools:
+                        errors.append("坐标或钻孔刀具未初始化")
+                        continue
+                except ValueError as exc:
+                    errors.append(str(exc))
                     continue
                 x_mm = _to_mm(x, unit, None)
                 y_mm = _to_mm(y, unit, None)
@@ -276,10 +339,11 @@ def parse_excellon(path: str) -> Dict[str, object]:
         return {"ok": False, "error": f"读不到 {os.path.basename(path)}"}
 
     if not holes:
-        return {"ok": False, "error": "没有解析到孔坐标 (检查是否为 Excellon .drl)"}
+        return {"ok": False, "error": "; ".join(dict.fromkeys(errors)) or "没有解析到孔坐标 (检查是否为 Excellon .drl)"}
     return {"ok": True, "kind": "holes", "items": holes, "unit": unit,
             "tools_mm": {k: round(v, 4) for k, v in tools.items() if v},
-            "source": os.path.basename(path), "format_decimals": decimals}
+            "source": os.path.basename(path), "format_decimals": decimals,
+            "warnings": list(dict.fromkeys(errors))}
 
 
 # --------------------------------------------------------------------------- 发现与汇总
@@ -310,10 +374,12 @@ def discover_sources(brd_path: str, extra_dirs: Iterable[str] = ()) -> List[dict
                     pass
         for name in names:
             full = os.path.join(d, name)
+            if not os.path.isfile(full):
+                continue
             low = os.path.basename(name).lower()
             if low in ("evan_components.csv", "evan_holes.csv", "evan_pads.csv"):
                 found.append({"path": full, "kind": "skill"})
-            elif low in ("place_txt.txt", "place_txt.csv") or low.startswith("place_txt"):
+            elif low in ("place_txt.txt", "place_txt.csv") or low.startswith(("place_txt", "comp_xy")):
                 found.append({"path": full, "kind": "placement"})
             elif low.endswith((".drl", ".nc", ".xln", ".txt")) and _looks_like_drill(full):
                 found.append({"path": full, "kind": "excellon"})
@@ -367,6 +433,12 @@ def build_inventory(brd_path: str, files: Optional[Iterable[str]] = None,
         if not got:
             errors.append(f"{os.path.basename(path)}: 解析失败")
             continue
+        for warning in got.get("warnings", []):
+            errors.append(f"{os.path.basename(path)}: {warning}")
+        if got.get("kind") == "components" and got.get("unit_from_file") is False:
+            errors.append(f"{os.path.basename(path)}: 未声明坐标单位，Placement 按 mil 读取，需核对")
+        for entry in got["items"]:
+            entry["source"] = os.path.abspath(path)
         if got["kind"] == "components":
             comps.extend(got["items"])
         elif got["kind"] == "pads":
@@ -375,7 +447,18 @@ def build_inventory(brd_path: str, files: Optional[Iterable[str]] = None,
             holes.extend(got["items"])
         used.append({"file": os.path.basename(path), "kind": got["kind"],
                      "count": len(got["items"]), "unit": got.get("unit", ""),
-                     "error": ""})
+                      "error": ""})
+
+    # Prefer database SKILL exports; a COMP_XY file remains a valid standalone input.
+    comps.sort(key=lambda c: (0 if os.path.basename(c.get("source", "")).lower() == "evan_components.csv" else 1))
+    by_ref = {}
+    for component in comps:
+        key = str(component.get("refdes", "")).upper()
+        old = by_ref.get(key)
+        if old and (abs(old["x_mm"] - component["x_mm"]) > 0.01 or abs(old["y_mm"] - component["y_mm"]) > 0.01):
+            errors.append(f"{key}: 多份坐标来源不一致，优先使用 SKILL 导出")
+        by_ref.setdefault(key, component)
+    comps = list(by_ref.values())
 
     # 孔位: 用焊盘栈名解析钻孔直径, 与 Excellon 的 tool 直径互为补充
     try:
@@ -384,16 +467,27 @@ def build_inventory(brd_path: str, files: Optional[Iterable[str]] = None,
         for h in holes:
             if h.get("drill_mm"):
                 h["drill_source"] = h.get("drill_source") or "钻孔文件刀具表"
-                continue
             parsed = parse_via_name(h.get("padstack") or "")
             if parsed and parsed.get("drill_mil"):
-                h["drill_mm"] = round(parsed["drill_mil"] * MM_PER_MIL, 4)
+                if not h.get("drill_mm"):
+                    h["drill_mm"] = round(parsed["drill_mil"] * MM_PER_MIL, 4)
                 h["pad_mm"] = round(parsed["pad_mil"] * MM_PER_MIL, 4)
-                h["drill_source"] = "焊盘栈名"
+                h["drill_source"] = h.get("drill_source") or "焊盘栈名"
+                h["span"] = parsed.get("span")
             else:
-                h["drill_source"] = ""
+                h["drill_source"] = h.get("drill_source") or ""
     except Exception:  # noqa: BLE001
         pass
+
+    def deduplicate(items, keys):
+        unique = {}
+        for item in items:
+            key = tuple(item.get(k) for k in keys)
+            unique.setdefault(key, item)
+        return list(unique.values())
+
+    comps = deduplicate(comps, ("refdes", "x_mm", "y_mm", "side"))
+    holes = deduplicate(holes, ("x_mm", "y_mm", "drill_mm", "span"))
 
     return {"components": comps, "holes": holes, "pads": pads, "sources": used,
             "errors": errors,
@@ -406,7 +500,7 @@ def _size_tolerance(drill_mm: float) -> float:
     return max(0.003, drill_mm * 0.02)
 
 
-def locate_failures(result: dict, inventory: dict, limit: int = 60) -> List[dict]:
+def locate_failures(result: dict, inventory: dict, limit: Optional[int] = None) -> List[dict]:
     """把 DFM 不符合项翻译成"数量 + 坐标"。
 
     只有和孔径直接相关的项 (最小/最大机械孔、激光孔) 才能精确匹配孔位;
@@ -424,18 +518,24 @@ def locate_failures(result: dict, inventory: dict, limit: int = 60) -> List[dict
             "capability": it.get("capability"), "unit": it.get("unit", "mm"),
             "message": it.get("message", ""), "source": it.get("source", ""),
             "count": None, "coords": [], "located": False, "note": "",
+            "field": field,
         }
         if field.startswith("min_annular_ring") and holes:
             cap = it.get("capability")
             sized = [h for h in holes if h.get("pad_mm") and h.get("drill_mm")]
+            if field == "min_annular_ring":
+                sized = [h for h in sized if not h.get("span") and h.get("is_through") is not False]
+            elif field == "min_annular_ring_laser":
+                sized = [h for h in sized if h.get("technology") == "laser"]
             matched = [h for h in sized
                        if (h["pad_mm"] - h["drill_mm"]) / 2.0 < cap - 1e-9]
             row["count"] = len(matched) if sized else None
-            row["coords"] = [{"x_mm": round(h["x_mm"], 3), "y_mm": round(h["y_mm"], 3),
+            row["coords"] = [{"x_mm": round(h["x_mm"], 6), "y_mm": round(h["y_mm"], 6),
                               "drill_mm": h.get("drill_mm"),
-                              "ring_mm": round((h["pad_mm"] - h["drill_mm"]) / 2.0, 4),
-                              "padstack": h.get("padstack", ""), "net": h.get("net", "")}
-                             for h in matched[:limit]]
+                               "ring_mm": round((h["pad_mm"] - h["drill_mm"]) / 2.0, 4),
+                               "padstack": h.get("padstack", ""), "net": h.get("net", ""),
+                               "refdes": h.get("refdes", ""), "source": h.get("source", "")}
+                              for h in matched[:limit]]
             row["located"] = bool(sized)
             if not sized:
                 row["note"] = "有孔位但焊盘直径未知 (焊盘栈名无法解析), 不能判断孔环"
@@ -445,21 +545,29 @@ def locate_failures(result: dict, inventory: dict, limit: int = 60) -> List[dict
             cap = it.get("capability")
             design = it.get("design")
             known = [h for h in holes if h.get("drill_mm")]
+            if field in ("min_mech_drill", "max_mech_drill"):
+                known = [h for h in known if not h.get("span") and h.get("is_through") is not False]
+            elif field == "min_laser_via":
+                # Size or padstack spelling alone cannot prove laser technology.
+                known = [h for h in known if h.get("technology") == "laser"]
             unknown = len(holes) - len(known)
-            if field == "max_mech_drill" and isinstance(design, (int, float)):
+            if field == "max_mech_drill" and isinstance(cap, (int, float)):
                 matched = [h for h in known
-                           if h["drill_mm"] > design + _size_tolerance(design)]
-                row["note"] = f"孔径 > {design}mm 的孔"
+                            if h["drill_mm"] > cap + 1e-9]
+                row["note"] = f"孔径 > 板厂能力 {cap}mm 的孔"
             elif isinstance(design, (int, float)):
                 # 先按"违反能力值的那个孔径"精确匹配: 这就是用户问的 0.199mm 有几个、在哪
                 tol = _size_tolerance(design)
                 exact = [h for h in known if abs(h["drill_mm"] - design) <= tol]
-                if exact:
+                if it.get("status") == "fail" and isinstance(cap, (int, float)):
+                    matched = [h for h in known if h["drill_mm"] < cap - 1e-9]
+                    row["note"] = f"孔径 < 板厂能力 {cap}mm 的全部孔"
+                elif exact:
                     matched = exact
                     row["note"] = f"孔径 = {design}mm 的孔"
                 elif isinstance(cap, (int, float)):
                     matched = [h for h in known
-                               if h["drill_mm"] < cap + _size_tolerance(cap)]
+                                if h["drill_mm"] < cap - 1e-9]
                     row["note"] = f"孔径 < {cap}mm 的孔 (没有与设计值 {design}mm 完全一致的孔)"
                 else:
                     matched = []
@@ -469,14 +577,15 @@ def locate_failures(result: dict, inventory: dict, limit: int = 60) -> List[dict
                 row["note"] = "设计值缺失, 无法匹配"
             if unknown:
                 row["note"] += f"; 另有 {unknown} 个孔孔径未解析 (焊盘栈名无法换算)"
-            row["count"] = len(matched)
-            row["coords"] = [{"x_mm": round(h["x_mm"], 3), "y_mm": round(h["y_mm"], 3),
+            row["count"] = len(matched) if known else None
+            row["coords"] = [{"x_mm": round(h["x_mm"], 6), "y_mm": round(h["y_mm"], 6),
                               "drill_mm": h.get("drill_mm"),
                               "ring_mm": (round((h["pad_mm"] - h["drill_mm"]) / 2.0, 4)
                                           if h.get("pad_mm") and h.get("drill_mm") else None),
-                              "padstack": h.get("padstack", ""), "net": h.get("net", "")}
+                               "padstack": h.get("padstack", ""), "net": h.get("net", ""),
+                               "refdes": h.get("refdes", ""), "source": h.get("source", "")}
                              for h in matched[:limit]]
-            row["located"] = True
+            row["located"] = bool(matched)
             if matched:
                 sizes = sorted({round(h["drill_mm"], 3) for h in matched if h.get("drill_mm")})
                 row["note"] += f", 涉及孔径 {sizes[:6]}" + (" 等" if len(sizes) > 6 else "")
@@ -533,11 +642,11 @@ def hole_size_summary(inventory: dict) -> List[dict]:
 def _write_scr(path: str, located: List[dict], unit_hint: str = "mm") -> Optional[str]:
     """生成 Allegro 脚本: 依次把视图移到每个不符合位置。
 
-    Allegro 的 zoom 命令吃的是设计用户单位, 所以来源是 mil 时要换算回去。
+    Allegro 的 zoom 命令吃的是设计用户单位, 所以 mm 要换算回设计单位。
     """
-    factor = 1.0 / MM_PER_MIL if unit_hint == "mil" else 1.0
+    factor = 1.0 / MM_PER_MIL if unit_hint == "mil" else (1.0 / 25.4 if unit_hint == "inch" else 1.0)
     lines = ["# Evan_BRD 定位脚本: 在 PCB Editor 里 Run Script 即可逐个跳转",
-             f"# 坐标单位: {unit_hint} (由导出文件的设计单位决定, 已换算)",
+             f"# 坐标单位: {unit_hint} (按 .brd 设计单位换算)",
              "setwindow pcb"]
     n = 0
     for row in located:
@@ -558,7 +667,8 @@ def _write_scr(path: str, located: List[dict], unit_hint: str = "mm") -> Optiona
 
 def write_report(out_dir: str, base_name: str, result: dict, inventory: dict,
                  located: Optional[List[dict]] = None,
-                 extras: Optional[Dict[str, object]] = None) -> Dict[str, object]:
+                 extras: Optional[Dict[str, object]] = None,
+                 design_unit: Optional[str] = None) -> Dict[str, object]:
     """写 xlsx + csv + txt + locate.scr, 返回各文件路径。"""
     located = located if located is not None else locate_failures(result, inventory)
     os.makedirs(out_dir, exist_ok=True)
@@ -681,9 +791,14 @@ def write_report(out_dir: str, base_name: str, result: dict, inventory: dict,
     except OSError as exc:
         paths["txt_error"] = str(exc)
 
-    units = {(s.get("unit") or "").lower() for s in inventory.get("sources") or []}
-    unit_hint = "mil" if units and units <= {"mils", "mil", "inches", "inch"} else "mm"
-    scr = _write_scr(os.path.join(out_dir, f"{base_name}_locate.scr"), located, unit_hint)
+    unit_hint = "mm"
+    design_unit = str(design_unit or "").strip().lower()
+    if design_unit in ("mil", "mils", "inch", "inches", "mm", "millimeter", "millimeters"):
+        unit_hint = "mil" if design_unit.startswith("mil") else (
+            "inch" if design_unit.startswith("inch") else "mm")
+    # A drill file's unit does not imply the BRD user unit. Do not guess.
+    scr = (_write_scr(os.path.join(out_dir, f"{base_name}_locate.scr"), located, unit_hint)
+           if design_unit else None)
     if scr:
         paths["scr"] = scr
     return paths
@@ -715,7 +830,7 @@ def _write_sheet_sizes(wb, inventory: dict) -> bool:
         for c, h in enumerate(["#", "X(mm)", "Y(mm)", "孔径(mm)", "焊盘(mm)", "孔环(mm)",
                                "焊盘栈", "网络", "来源"], 1):
             ws2.cell(row=1, column=c, value=h).font = Font(bold=True)
-        for i, hole in enumerate(holes[:5000], 2):
+        for i, hole in enumerate(holes, 2):
             pad = hole.get("pad_mm")
             ring = round((pad - hole["drill_mm"]) / 2.0, 4) if pad and hole.get("drill_mm") else None
             ws2.cell(row=i, column=1, value=i - 1)
@@ -769,7 +884,8 @@ def analyze_and_locate(brd_path: str, files: Optional[Iterable[str]] = None,
         "板尺寸": f"{size[0]} x {size[1]} mm" if size else "未读到",
         "层数": extracted.get("layer_count") or "未读到",
     }
-    paths = write_report(out_dir, base_name, result, inventory, located, extras=extras)
+    paths = write_report(out_dir, base_name, result, inventory, located, extras=extras,
+                         design_unit=extracted.get("units"))
     return {"result": result, "inventory": inventory, "located": located,
             "paths": paths, "out_dir": out_dir, "extracted": extracted}
 

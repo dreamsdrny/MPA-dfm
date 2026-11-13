@@ -1022,6 +1022,7 @@ def cap_unconnected_report(ctx: Context) -> Result:
                              ("UNCONNECTED", "RATSNEST", "UNROUTED", "FLY LINE"),
                              ("UNCONNECTED", "RATSNEST"), cols, rows,
                              own_titles=("UNCONNECTED", "RATSNEST", "UNROUTED", "FLY LINE"))
+    merged_hits = len(rows)
     if not rows:
         # 既没有 DRC 报告, 也没有用户导入的同类报告 -> 如实说"算不了"
         res = unavailable(cap, "未连接状态必须在带网络的数据库上判定, "
@@ -1035,13 +1036,18 @@ def cap_unconnected_report(ctx: Context) -> Result:
         # 这里重写 summary 会覆盖 _merge_into 追加的合并说明, 所以再拼一次
         res.summary = (f"从 DRC 报告筛出 {native_hits} 条未连接 / 飞线条目"
                        f"（{drc.get('source')}）" + (f"；{note}" if note else ""))
-    elif have_drc:
-        # DRC 报告存在、但其中没有未连接条目: 这是"已知为零", 不是"没有数据"
+    elif have_drc and not merged_hits:
+        # DRC 报告存在、且合并后确实没有未连接条目: 这是"已知为零", 不是"没有数据"
         rows.insert(0, {"类别": "（无）", "层": "", "网络": "", "位置": "", "器件": "",
                         "摘要": f"{drc.get('source')} 报告里没有未连接 / 飞线记录"})
         res.status = PASS
         res.summary = (f"导入的 DRC 报告里没有未连接 / 飞线记录（{drc.get('source')}）"
                        + (f"；{note}" if note else ""))
+    elif have_drc:
+        # DRC 本身没有未连接条目, 但用户另导入的 Unconnected/飞线报告里有
+        res.status = WARN
+        res.summary = (f"DRC 报告未列出未连接, 但导入的同类报告有 {merged_hits} 条记录, "
+                       "需与原始报告核对" + (f"；{note}" if note else ""))
     else:
         res.status = INFO
         res.summary = "本工具算不了未连接; 以下明细全部来自用户导入的报告"

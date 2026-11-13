@@ -8,6 +8,7 @@ from src.dfm_inputs import FIELD_META
 from src.smt_engine import (STATUSES, UNITS, analyze_smt,
                             load_smt_profile, number)
 from src.ui.widgets import scroll_area
+from src.ui.i18n import translate
 
 DESIGN_UNITS = {key: meta.get("unit", "mm") for key, meta in FIELD_META.items()}
 DESIGN_UNITS.update(chip_pad_symmetry_ratio="ratio", bga_pitch="mm",
@@ -195,8 +196,8 @@ class SMTPanel(ttk.Frame):
                 it = result["items"][idx]
                 fmt = lambda v: "—" if v is None else f"{v:.6g}"
                 self.tree.insert("", tk.END, iid=str(idx), tags=(it["status"],), values=(
-                    STATUSES[it["status"]], it["label"], fmt(it["actual"]), it["requirement"],
-                    it["unit"], fmt(it["margin"]), it["source"] or it["reason"]))
+                    translate(STATUSES[it["status"]]), translate(it["label"]), fmt(it["actual"]), it["requirement"],
+                    it["unit"], fmt(it["margin"]), translate(it["source"] or it["reason"])))
             if start + 100 < len(result["items"]):
                 self._render_id = self.after(1, lambda: batch(start + 100))
         batch()
@@ -207,7 +208,7 @@ class SMTPanel(ttk.Frame):
     def _detail(self, text):
         self.detail.configure(state=tk.NORMAL)
         self.detail.delete("1.0", tk.END)
-        self.detail.insert("1.0", text)
+        self.detail.insert("1.0", translate(text))
         self.detail.configure(state=tk.DISABLED)
 
     def show_detail(self, _event=None):

@@ -197,6 +197,10 @@ def parse_drc_report(path: str) -> dict:
             if m and not ref:
                 ref = m.group(1).strip()
         if cls is None and actual is None:
+            if re.search(r"(?i)(?:no\s+(?:drc\s+)?(?:errors?|violations?)|(?:errors?|violations?)\s*[:=]\s*0\b)", joined):
+                continue
+            if re.fullmatch(r"(?is)\s*(?:allegro\s+)?(?:drc|design rule check)\s+report\s*", joined):
+                continue
             unrecognized += 1
             continue
         items.append({
@@ -214,7 +218,8 @@ def parse_drc_report(path: str) -> dict:
     for it in items:
         classes[it["class"]] = classes.get(it["class"], 0) + 1
 
-    ok = bool(items)
+    explicit_zero = bool(re.search(r"(?i)(?:no\s+(?:drc\s+)?(?:errors?|violations?)|(?:errors?|violations?)\s*[:=]\s*0\b)", text))
+    ok = bool(items) or (explicit_zero and _looks_like_drc(text) and not unrecognized)
     return {
         "ok": ok,
         "kind": "drc",

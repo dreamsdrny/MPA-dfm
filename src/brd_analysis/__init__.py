@@ -66,7 +66,7 @@ def write_reports(bundle: dict, out_dir: str, base_name: str = "BRD分析报告"
 
     # 如果调用方没有显式指定 base_name，则根据 bundle 中的 brd_path 自动生成
     if base_name == "BRD分析报告":
-        brd_path = bundle.get("brd_path") or bundle.get("input_path")
+        brd_path = bundle.get("brd_path") or bundle.get("input_path") or bundle.get("board", {}).get("brd_path")
         if brd_path:
             stem = pathlib.Path(brd_path).stem  # 例如 "576"
             base_name = f"{stem}.dfm报告"

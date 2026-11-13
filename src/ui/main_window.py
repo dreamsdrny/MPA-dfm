@@ -11,7 +11,7 @@ DFM 分析在独立程序 Evan_DFM.exe 里 (evan_dfm.py + dfm_dialog.py), 本窗
 本文件只做"把它们连起来": 线程 + 队列 + 状态栏, 所有 Tk 调用都留在主线程。
 """
 import os
-import threading
+import queue
 import tkinter as tk
 import traceback
 from tkinter import filedialog, messagebox, ttk
@@ -23,7 +23,8 @@ from src.ui.main_panels import (build_footer, build_header, build_input_card,
                                build_status_bar)
 from src.ui.paths import app_base_dir, default_output_dir
 from src.ui.prefs import load_prefs, save_prefs
-from src.ui.theme import COLORS, apply_theme, enable_dpi_awareness, fonts
+from src.ui.tasks import TaskRunner
+from src.ui.theme import COLORS, apply_app_icon, apply_theme, enable_dpi_awareness, fonts
 
 
 class MainWindow:
@@ -42,6 +43,7 @@ class MainWindow:
         self.root.configure(bg=COLORS["bg"])
         self._fonts = fonts(self.root)
         apply_theme(self.root)
+        apply_app_icon(self.root)
         # 每次启动重写界面日志, 便于用户只回传"这一次"的记录
         self._ui_log_path = os.path.join(app_base_dir(), "Evan_BRD_ui.log")
         try:
@@ -65,8 +67,12 @@ class MainWindow:
         self.autofill_var = tk.BooleanVar(value=True)
         self.checker_name = tk.StringVar(value="BRD-AI")
         self.status_var = tk.StringVar(value="就绪")
+        self._logs = queue.Queue()
+        self._log_poll_id = None
 
         self._build_ui()
+        self.tasks = TaskRunner(self.root)
+        self._log_poll_id = self.root.after(80, self._poll_logs)
 
     # ------------------------------------------------------------ 界面
     def _build_ui(self):
@@ -101,7 +107,8 @@ class MainWindow:
 
     def _set_busy(self, busy: bool):
         state = tk.DISABLED if busy else tk.NORMAL
-        for btn in (self.run_btn, self.demo_btn, self.open_btn, self.analyze_btn):
+        for btn in (self.run_btn, self.demo_btn, self.open_btn, self.analyze_btn,
+                    self.store_btn):
             btn.config(state=state)
         if busy:
             self.progress.pack(side=tk.RIGHT, padx=16, pady=7)
@@ -112,7 +119,14 @@ class MainWindow:
 
     # ------------------------------------------------------------ 生命周期
     def _close(self):
+        if self.tasks.pending:
+            messagebox.showinfo("正在生成报告", "请等待 Checklist 报告生成完成后再关闭。", parent=self.root)
+            return
         self._remember()
+        self.tasks.close()
+        if self._log_poll_id is not None:
+            self.root.after_cancel(self._log_poll_id)
+            self._log_poll_id = None
         try:
             self.root.destroy()
         except tk.TclError:
@@ -172,10 +186,17 @@ class MainWindow:
 
     def _post_log(self, text, tag=None):
         """线程安全的日志: 后台线程调用, 投递回主线程执行。"""
-        try:
-            self.root.after(0, lambda: self._log(text, tag))
-        except (RuntimeError, tk.TclError):
-            pass
+        self._logs.put((text, tag))
+
+    def _poll_logs(self):
+        self._log_poll_id = None
+        for _ in range(60):
+            try:
+                text, tag = self._logs.get_nowait()
+            except queue.Empty:
+                break
+            self._log(text, tag)
+        self._log_poll_id = self.root.after(80, self._poll_logs)
 
     def _clear_log(self):
         self.logview.clear()
@@ -251,10 +272,19 @@ class MainWindow:
         except Exception as exc:  # noqa: BLE001
             self._log(f"[ERROR] 打开分析对话框失败: {exc}", "error")
 
+    def _open_store_check(self):
+        """打开「BRD↔BOM 联动检查」对话框 (store-brd / store-bom)。"""
+        from src.ui.store_dialog import open_store_check
+
+        try:
+            open_store_check(self.root, out_dir=self.output_dir.get().strip(),
+                             log=self._log)
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"[ERROR] 打开联动检查失败: {exc}", "error")
+            messagebox.showerror("提示", str(exc))
+
     # ------------------------------------------------------------ 主流程: 填写 Checklist
     def _run_demo(self):
-        self.brd_path.set("")
-        self.checklist_path.set("")
         self._run_checklist(use_demo=True)
 
     def _run_checklist(self, use_demo=False):
@@ -268,42 +298,51 @@ class MainWindow:
                     "提示", "请选择 BRD 文件 (或 Net List JSON)")
                 return
 
+        # 所有 Tk 变量必须在主线程读取后以普通值传给工作线程。
+        snapshot = {
+            "checklist_path": self.checklist_path.get().strip(),
+            "output_dir": self.output_dir.get(),
+            "brd_path": self.brd_path.get().strip(),
+            "nets_path": self.net_list_var.get().strip(),
+            "factory": self.factory.get(),
+            "board_type": self.board_type.get(),
+            "level": self.capability_level.get(),
+            "copper_um": self.copper_um.get(),
+            "copper_oz": self.copper_oz.get(),
+            "checker": self.checker_name.get().strip(),
+        }
         self._set_busy(True)
         self.logview.clear()
         self.status_var.set("正在填写 Checklist…")
-        threading.Thread(target=self._execute_checklist, args=(use_demo,),
-                         daemon=True).start()
+        self.tasks.submit("checklist", lambda: self._execute_checklist(snapshot, use_demo),
+                          self._checklist_done, self._checklist_failed, self._finish_ui)
 
-    def _execute_checklist(self, use_demo):
-        try:
-            result = checklist_pipeline.run(
-                checklist_path=self.checklist_path.get().strip(),
-                output_dir=self.output_dir.get(),
-                brd_path=self.brd_path.get().strip(),
-                nets_path=self.net_list_var.get().strip(),
-                factory=self.factory.get(),
-                board_type=self.board_type.get(),
-                level=self.capability_level.get(),
-                copper_um=self.copper_um.get(),
-                copper_oz=self.copper_oz.get(),
-                checker=self.checker_name.get().strip(),
+    def _execute_checklist(self, snapshot, use_demo):
+        return checklist_pipeline.run(
+                checklist_path=snapshot["checklist_path"],
+                output_dir=snapshot["output_dir"],
+                brd_path=snapshot["brd_path"],
+                nets_path=snapshot["nets_path"],
+                factory=snapshot["factory"],
+                board_type=snapshot["board_type"],
+                level=snapshot["level"],
+                copper_um=snapshot["copper_um"],
+                copper_oz=snapshot["copper_oz"],
+                checker=snapshot["checker"],
                 demo=use_demo,
                 log=self._post_log,
             )
-            stats = result["stats"]
-            text = (f"Checklist 完成: PASS {stats['auto_pass']} / "
-                    f"VERIFY {stats['auto_verify']} / FAIL {stats['auto_fail']} / "
-                    f"需人工 {stats['manual']} / N/A {stats['na']}")
-            self.root.after(0, lambda: self.status_var.set(text))
-            self._last_result = result
-        except Exception as exc:  # noqa: BLE001
-            message = str(exc)          # 先取出文本: except 结束后 exc 会被删除
-            detail = traceback.format_exc()
-            self.root.after(0, lambda: self._log(f"[ERROR] {message}", "error"))
-            self.root.after(0, lambda: self._log(detail, "error"))
-            self.root.after(0, lambda: self.status_var.set("Error"))
-        finally:
-            self._finish()
+
+    def _checklist_done(self, result):
+        stats = result["stats"]
+        self.status_var.set(f"Checklist 完成: PASS {stats['auto_pass']} / "
+                            f"VERIFY {stats['auto_verify']} / FAIL {stats['auto_fail']} / "
+                            f"需人工 {stats['manual']} / N/A {stats['na']}")
+        self._last_result = result
+
+    def _checklist_failed(self, message):
+        self._log(f"[ERROR] {message}", "error")
+        self.status_var.set("Checklist 生成失败")
 
     def _inspect_template(self):
         """只读模板结构, 确认表头/列能识别 (更新模板后先点这里)。"""
@@ -356,13 +395,6 @@ class MainWindow:
             from evan_brd import log_crash
             log_crash("tk-callback", text)
         except Exception:  # noqa: BLE001
-            pass
-
-    def _finish(self):
-        """后台线程收尾: 控件操作一律回主线程执行 (Tk 非线程安全)。"""
-        try:
-            self.root.after(0, self._finish_ui)
-        except RuntimeError:
             pass
 
     def _finish_ui(self):

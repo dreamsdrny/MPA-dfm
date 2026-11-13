@@ -4,6 +4,8 @@ Snapshot dictionaries are the boundary for a future WPF/PySide frontend.
 Generation is staged first; an error cannot leave a half-written XLSX behind.
 """
 import json
+import csv
+from copy import deepcopy
 import os
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +15,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 
 from src.dfm_report import build_dfm_workbook, generate_dfm_text
 from src.smt_engine import STATUSES, append_smt_sheets, export_smt_report
+from src.pcb_locations import LOCATION_HEADERS, location_values
 
 
 def combined_verdict(pcb, smt):
@@ -88,6 +91,8 @@ def build_combined_workbook(pcb, smt, board_meta=None):
         ["工艺管控口径", smt["conclusion_note"]],
     ])
     overview.column_dimensions["B"].width = 100
+    if pcb.get("report_filter_note") or smt.get("report_filter_note"):
+        overview.append(["报告筛选说明", pcb.get("report_filter_note", "") + "；" + smt.get("report_filter_note", "")])
     rows = []
     for it in pcb.get("issues", []):
         rows.append(["PCB", it.get("code"), it.get("rule"), it.get("severity"),
@@ -125,12 +130,20 @@ def export_report(kind, path, pcb=None, smt=None, board_meta=None):
     if kind in ("dfm", "smt") and not smt:
         raise ValueError("请先完成 SMT 分析")
     target = Path(path).resolve()
-    if target.suffix.lower() != ".xlsx":
-        raise ValueError("报告文件请使用 .xlsx 扩展名")
+    if target.suffix.lower() not in (".xlsx", ".csv"):
+        raise ValueError("报告文件请使用 .xlsx 或 .csv 扩展名")
+    if kind == "dfm":
+        _validate_brd(pcb, smt)
     board_meta = board_meta or {}
+    if board_meta.get("hide_low_priority"):
+        pcb, smt = filter_report_priority(pcb, smt)
+    target.parent.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix=".dfm-report-", dir=target.parent) as tmp:
         staged = Path(tmp) / target.name
-        if kind == "smt":
+        if target.suffix.lower() == ".csv":
+            _write_csv(staged, kind, pcb, smt, board_meta)
+            suffixes = (".csv",)
+        elif kind == "smt":
             export_smt_report(smt, staged)
             suffixes = (".xlsx", ".json")
         elif kind == "pcb":
@@ -164,3 +177,76 @@ def export_report(kind, path, pcb=None, smt=None, board_meta=None):
             os.replace(staged.with_suffix(suffix), dest)
             outputs.append(str(dest))
     return outputs
+
+
+def filter_report_priority(pcb, smt):
+    """Presentation filter only: verdict, coverage and underlying counts remain unchanged."""
+    pcb, smt = deepcopy(pcb), deepcopy(smt)
+    low = {"低", "low", "LOW", "info"}
+    if pcb:
+        issues = pcb.get("issues", [])
+        hidden = [i for i in issues if i.get("severity") in low]
+        hidden_rules = {i.get("rule") for i in hidden}
+        retained_rules = {i.get("rule") for i in issues if i.get("severity") not in low}
+        pcb["issues"] = [i for i in issues if i.get("severity") not in low]
+        pcb["items"] = [i for i in pcb.get("items", []) if i.get("status") != "info" and
+                        i.get("severity") not in low and (i.get("item") not in hidden_rules or i.get("item") in retained_rules)]
+        pcb["problem_locations"] = [i for i in pcb.get("problem_locations", []) if
+            i.get("severity") not in low and (i.get("item") not in hidden_rules or i.get("item") in retained_rules)]
+        pcb["report_filter_note"] = f"报告隐藏低优先级 {len(hidden)} 条问题；原始分析结论/错误计数不变"
+        summary = dict(pcb.get("issue_summary", {}))
+        summary["低"] = 0
+        summary["总计"] = len(pcb["issues"])
+        pcb["issue_summary"] = summary
+    if smt:
+        smt["items"] = [i for i in smt.get("items", []) if i.get("severity") not in low]
+        smt["report_filter_note"] = "已隐藏低优先级项目；结论/覆盖率仍引用完整分析"
+    return pcb, smt
+
+
+def _validate_brd(pcb, smt):
+    if pcb.get("input_brd") and smt.get("input_brd") and os.path.normcase(
+            os.path.abspath(pcb["input_brd"])) != os.path.normcase(os.path.abspath(smt["input_brd"])):
+        raise ValueError("PCB 与 SMT 结果来自不同 BRD，不能合并")
+
+
+def _write_csv(path, kind, pcb, smt, board_meta):
+    """One rectangular UTF-8-BOM table, including every check and every problem point."""
+    headers = ["记录类型", "范围", "板名", "BRD来源", "厂商", "等级/产线", "分析时间"] + LOCATION_HEADERS
+    with open(path, "w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(headers)
+
+        def write(record_type, scope, result, row):
+            meta = [record_type, scope, board_meta.get("board_name", ""), result.get("input_brd", ""),
+                    result.get("factory_label", "") if scope == "PCB" else result.get("meta", {}).get("factory", ""),
+                    result.get("capability_label", "") if scope == "PCB" else result.get("profile_label", ""),
+                    result.get("analyzed_at", "")]
+            writer.writerow(meta + location_values(row))
+
+        if kind in ("pcb", "dfm"):
+            write("分析结论", "PCB", pcb, dict(status=pcb.get("verdict", ""),
+                  note=f"覆盖率 {pcb.get('coverage', {}).get('ratio', 0):.0%}；可放行 {bool(pcb.get('releasable'))}"))
+            for item in pcb.get("items", []):
+                write("能力比对", "PCB", pcb, dict(item=item.get("item"), field=item.get("field"),
+                      status=item.get("status"), measured=item.get("design"), capability=item.get("capability"),
+                      unit=item.get("unit"), source=item.get("source"), note=item.get("message")))
+            for row in pcb.get("problem_locations", []):
+                write("问题坐标", "PCB", pcb, row)
+            for row in pcb.get("component_coordinates", []):
+                write("器件坐标", "PCB", pcb, row)
+            write("坐标说明", "PCB", pcb, dict(note=pcb.get("coordinate_note", "未提供对象级坐标来源")))
+            if pcb.get("report_filter_note"):
+                write("报告筛选", "PCB", pcb, dict(note=pcb["report_filter_note"]))
+            for error in pcb.get("gerber_errors", []):
+                write("Gerber缺失/解析", "PCB", pcb, dict(note=error))
+        if kind in ("smt", "dfm"):
+            write("分析结论", "SMT", smt, dict(status=smt.get("verdict", ""),
+                  note=smt.get("conclusion_note", "")))
+            if smt.get("report_filter_note"):
+                write("报告筛选", "SMT", smt, dict(note=smt["report_filter_note"]))
+            for item in smt.get("items", []):
+                write("能力比对", "SMT", smt, dict(item=item.get("label"), field=item.get("field", item.get("id")),
+                      status=STATUSES.get(item.get("status"), item.get("status")), measured=item.get("actual"),
+                      capability=item.get("requirement"), unit=item.get("unit"), source=item.get("source"),
+                      note=(item.get("reason", "") + "；" + item.get("advice", ""))))

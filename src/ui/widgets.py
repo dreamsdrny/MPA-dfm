@@ -89,8 +89,13 @@ def scroll_area(parent) -> tuple:
     def _wheel(event):
         canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
-    canvas.bind("<Enter>", lambda e: canvas.bind_all("<MouseWheel>", _wheel))
-    canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
+    # Do not unbind the application's other scroll areas.
+    canvas.bind("<MouseWheel>", _wheel)
+    def bind_children(widget):
+        widget.bind("<MouseWheel>", _wheel, add="+")
+        for child in widget.winfo_children():
+            bind_children(child)
+    inner.bind("<Map>", lambda e: bind_children(inner))
     return canvas, inner
 
 
@@ -109,7 +114,13 @@ def make_tree(parent, columns, height=24):
                         selectmode="browse")
     for cid, head, width, minwidth, anchor in columns:
         tree.heading(cid, text=head)
-        tree.column(cid, width=width, minwidth=minwidth, anchor=anchor)
+        tree.column(cid, width=width, minwidth=minwidth, anchor=anchor, stretch=False)
+    def fit(event):
+        total = sum(c[2] for c in columns)
+        extra = max(0, event.width-total-4)
+        for cid, _head, width, _minimum, _anchor in columns:
+            tree.column(cid, width=width + (extra if cid == columns[-1][0] else 0))
+    tree.bind("<Configure>", fit, add="+")
     vsb = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=tree.yview)
     hsb = ttk.Scrollbar(frame, orient=tk.HORIZONTAL, command=tree.xview)
     tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)

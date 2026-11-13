@@ -11,7 +11,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from src.design_inputs import export_bom, import_bom, load_project
+from src.design_inputs import (brd_component_records, export_bom, import_bom,
+                               load_project, reconcile_bom)
 from src.design_inputs.gerber import parse_gerber
 from src.design_inputs.manufacturing import parse_odb, parse_step
 
@@ -46,6 +47,7 @@ class InputTests(unittest.TestCase):
             writer.writerow(["R1,R2", "123", "2"])
         rows = import_bom(p)
         self.assertEqual([r["refdes"] for r in rows], ["R1", "R2"])
+        self.assertEqual(rows[0]["dnp"], False)
         export_bom(p, rows)
         self.assertEqual(import_bom(p), rows)
         p.write_text("refdes,qty\nR1,2\n", encoding="utf-8")
@@ -82,6 +84,71 @@ class InputTests(unittest.TestCase):
         self.assertEqual(result["schema"], ["AP214"])
         self.assertEqual(result["entity_counts"]["MANIFOLD_SOLID_BREP"], 1)
         self.assertIsNone(result["height_mm"])
+
+    def test_bom_side_dnp_normalization(self):
+        p = self.root / "bom.csv"
+        p.write_text("refdes,side,dnp\nR1,Top,Yes\nR2,B,No\n", encoding="utf-8")
+        rows = import_bom(p)
+        self.assertEqual((rows[0]["side"], rows[0]["dnp"]), ("TOP", True))
+        self.assertEqual((rows[1]["side"], rows[1]["dnp"]), ("BOTTOM", False))
+
+    def test_reconcile_verified(self):
+        records = [{"refdes": "R1", "package": "0603"}, {"refdes": "C2", "package": ""}]
+        rows = [{"refdes": "R1", "footprint": "0603", "part_number": "A"},
+                {"refdes": "C2", "footprint": "", "part_number": "B"}]
+        result = reconcile_bom(records, rows)
+        self.assertEqual(result["status"], "verified")
+        self.assertTrue(result["consistent"])
+        self.assertEqual(result["summary"]["matched_count"], 2)
+
+    def test_reconcile_missing_extra_conflict(self):
+        records = [{"refdes": "R1", "package": "0603"},
+                   {"refdes": "C1", "package": "0402"},
+                   {"refdes": "U1", "package": "QFN"}]
+        rows = [{"refdes": "R1", "footprint": "0603"},
+                {"refdes": "U1", "footprint": "LQFP"},
+                {"refdes": "J1", "footprint": "HDR", "dnp": False}]
+        result = reconcile_bom(records, rows)
+        self.assertEqual(result["status"], "incomplete")
+        self.assertFalse(result["consistent"])
+        self.assertEqual([x["refdes"] for x in result["missing_in_bom"]], ["C1"])
+        self.assertEqual([x["refdes"] for x in result["missing_in_brd"]], ["J1"])
+        self.assertEqual(result["conflicts"][0]["field"], "footprint")
+        statuses = {row["refdes"]: row["status"] for row in result["rows"]}
+        self.assertEqual(statuses, {"R1": "matched", "C1": "missing_in_bom",
+                                    "U1": "conflict", "J1": "missing_in_brd"})
+
+    def test_reconcile_value_keeps_decimal_difference(self):
+        result = reconcile_bom([{"refdes": "R1", "value": "1.0k"}],
+                               [{"refdes": "R1", "value": "10k"}])
+        self.assertEqual(result["status"], "review")
+        self.assertEqual(result["conflicts"][0]["field"], "value")
+
+    def test_reconcile_without_brd_components_is_unavailable(self):
+        result = reconcile_bom([], [{"refdes": "R1"}])
+        self.assertEqual(result["status"], "unavailable")
+        self.assertFalse(result["consistent"])
+        self.assertIn("不能判定缺漏", result["warnings"][0])
+        self.assertEqual(result["missing_in_brd"], [])
+        self.assertEqual(result["rows"][0]["status"], "unverified")
+
+    def test_load_project_attaches_bom_reconciliation(self):
+        board = ROOT / "demo" / "DEMO_BOARD.brd"
+        records = brd_component_records(board)
+        self.assertTrue(records["ok"])
+        p = self.root / "full-bom.csv"
+        with p.open("w", encoding="utf-8", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["refdes", "part_number"])
+            for record in records["records"]:
+                writer.writerow([record["refdes"], "PN-" + record["refdes"]])
+            writer.writerow(["J99", "EXTRA"])
+        project = load_project(board, [p])
+        self.assertEqual(len(project["bom_checks"]), 1)
+        result = project["bom_checks"][0]["reconciliation"]
+        self.assertEqual(result["status"], "review")
+        self.assertEqual([x["refdes"] for x in result["missing_in_brd"]], ["J99"])
+        self.assertEqual(project["supplements"][0]["reconciliation"]["status"], "review")
 
     def test_primary_and_failed_supplement(self):
         board = ROOT / "demo" / "DEMO_BOARD.brd"

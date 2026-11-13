@@ -15,7 +15,7 @@
 
 坐标口径
 --------
-* 全部换算成 mm, 原点与 Allegro 一致 (板左下为原点, Y 向上)。
+* 全部换算成 mm, 保持 Allegro 数据库原点 (不一定是板左下)，不平移/镜像。
 * `bbox` 是该网络所有引脚/过孔/走线的包络框; `w_mm/h_mm` 是包络宽高 (长宽),
   `center` 是包络中心; `trace_length_mm` 是走线总长; `width_*_mm` 是线宽范围。
 * 引脚按焊盘外框计入包络 (中心 ± 宽/高一半), 过孔按中心点, 走线按两端点。
@@ -54,11 +54,13 @@ def _to_mm(value, unit: str, dbu_per_unit, is_dbu: bool = False):
         num = float(value)
     except (TypeError, ValueError):
         return None
+    if not math.isfinite(num):
+        return None
     factor = _UNIT_MM.get((unit or "").strip().lower())
     if factor is None:
         return None
     if is_dbu:
-        if not dbu_per_unit:
+        if not dbu_per_unit or not math.isfinite(float(dbu_per_unit)) or float(dbu_per_unit) <= 0:
             return None
         return num / float(dbu_per_unit) * factor
     return num * factor
@@ -101,17 +103,16 @@ def parse_traces_csv(path: str) -> dict:
                 if not header:
                     header = [h.strip().upper() for h in line.split(",")]
                     continue
-                if not all(col in header for col in _TRACE_COLUMNS):
+                user_units = "X1_UU" in header
+                columns = tuple(col.replace("_DBU", "_UU") for col in _TRACE_COLUMNS) if user_units else _TRACE_COLUMNS
+                if not all(col in header for col in columns):
                     continue
                 vals = next(csv.reader([line]))
                 row = dict(zip(header, (v.strip() for v in vals)))
-                x1 = _to_mm(row.get("X1_DBU"), unit, dbu, True)
-                y1 = _to_mm(row.get("Y1_DBU"), unit, dbu, True)
-                x2 = _to_mm(row.get("X2_DBU"), unit, dbu, True)
-                y2 = _to_mm(row.get("Y2_DBU"), unit, dbu, True)
+                x1, y1, x2, y2 = [_to_mm(row.get(col), unit, dbu, not user_units) for col in columns]
                 if None in (x1, y1, x2, y2):
                     continue
-                width = _to_mm(row.get("WIDTH_DBU"), unit, dbu, True)
+                width = _to_mm(row.get("WIDTH_UU" if user_units else "WIDTH_DBU"), unit, dbu, not user_units)
                 net = (row.get("NET") or "").strip()
                 if not net:
                     continue
@@ -160,9 +161,10 @@ def _detect_kind(path: str) -> Optional[str]:
                 if not line.strip():
                     continue
                 cols = [c.strip().upper() for c in line.split(",")]
-                if all(col in cols for col in _TRACE_COLUMNS):
+                if all(col in cols for col in _TRACE_COLUMNS) or all(
+                         col.replace("_DBU", "_UU") in cols for col in _TRACE_COLUMNS):
                     return "traces"
-                if "W_DBU" in cols and "H_DBU" in cols:
+                if ("W_DBU" in cols and "H_DBU" in cols) or ("W_UU" in cols and "H_UU" in cols):
                     return "pads"
                 if "PADSTACK" in cols:
                     return "holes"

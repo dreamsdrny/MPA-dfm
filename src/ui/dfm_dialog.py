@@ -4,6 +4,7 @@ from datetime import datetime
 import os
 import queue
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -13,8 +14,12 @@ from src.workbench_report import export_report
 from src.pcb_reader import extract_brd_info
 from src.ui.dfm_params import ParamPanel
 from src.ui.dfm_results import ResultPanel
-from src.ui.theme import COLORS, Card, apply_theme, enable_dpi_awareness, fonts
+from src.ui.theme import (COLORS, Card, apply_app_icon, apply_theme, enable_dpi_awareness, fonts,
+                          set_color_mode, refresh_widget_colors)
+from src.ui import i18n
 from src.ui.tasks import TaskRunner
+from src.allegro_bridge import AllegroSession, discover_editor, arrange_editor, point_mm
+from src.ui.responsive import scroll_workbench, FlowBar, wrap_label
 
 
 class DFMDialog:
@@ -28,6 +33,9 @@ class DFMDialog:
     """
 
     def __init__(self, master, brd_path: str = "", standalone: bool = False):
+        from src.ui.prefs import load_prefs
+        prefs = load_prefs()
+        self._ui_poll_id = None
         self.brd_info = None
         self.last_result = None
         self.last_design = {}
@@ -39,28 +47,64 @@ class DFMDialog:
         self._loaded_path = ""
         self._checklist_window = None
         self._input_revision = 0
+        self._pcb_state = "idle"
+        self._editor_session = None
+        self._editor_poll_id = None
+        self._editor_last_ack = None
+        self._editor_started = 0
+        self._editor_export_pending = False
+        self._editor_arranged = False
+        self._editor_layout_requested = False
+        self._component_coordinates = []
+        self._component_brd_path = ""
+        self._coordinate_load_token = 0
 
         enable_dpi_awareness()
         self.standalone = standalone
         self.win = master if standalone else tk.Toplevel(master)
-        self.win.title("MPA-DFM - PCB / SMT 制造能力分析")
-        self.win.geometry("1380x850")
-        self.win.minsize(1080, 700)
+        set_color_mode(prefs.get("ui_theme", "light"))
+        i18n.LANGUAGE = prefs.get("ui_language", "zh")
+        self.win.title("Evan MPA-DFM - PCB / SMT 制造能力分析")
+        width = min(1380, max(800, self.win.winfo_screenwidth() - 60))
+        height = min(850, max(560, self.win.winfo_screenheight() - 100))
+        self.win.geometry(f"{width}x{height}")
+        self.win.minsize(min(800, width), min(500, height))
         self.win.protocol("WM_DELETE_WINDOW", self._close)
         self.win.bind("<Destroy>", self._on_destroy, add="+")
         self.win.configure(bg=COLORS["bg"])
         self._fonts = fonts(self.win)
         apply_theme(self.win)
+        apply_app_icon(self.win)
 
         self.status_var = tk.StringVar(value="就绪：导入 BRD 后点「执行分析」")
+        self.coordinate_dir = tk.StringVar()
+        self.report_format = tk.StringVar(value=".xlsx")
+        self.language = tk.StringVar(value="English" if i18n.LANGUAGE == "en" else "中文")
+        self.color_mode = tk.StringVar(value="Dark" if prefs.get("ui_theme") == "dark" else "Light")
+        self.hide_low_priority = tk.BooleanVar(value=False)
+        self.output_pcb_report = tk.BooleanVar(value=False)
+        self.gerber_dir = tk.StringVar()
+        self.auto_gerber = tk.BooleanVar(value=True)
+        self._exported_gerber = None
+        self.editor_path = tk.StringVar(value=discover_editor(prefs.get("allegro_editor", "")))
+        self.sync_editor = tk.BooleanVar(value=True)
+        self.beside_editor = tk.BooleanVar(value=True)
+        self.editor_status = tk.StringVar(value="Allegro：未连接")
 
-        ttk.Label(self.win, textvariable=self.status_var, style="Status.TLabel",
-                  anchor=tk.W).pack(fill=tk.X, side=tk.BOTTOM)
+        status_label = ttk.Label(self.win, textvariable=self.status_var, style="Status.TLabel", anchor=tk.W)
+        status_label.pack(fill=tk.X, side=tk.BOTTOM)
+        wrap_label(status_label, self.win, 32)
+        self.content = scroll_workbench(self.win)
 
         self._build_header()
         self._build_report_bar()
+        self._build_coordinate_bar()
         self.tasks = TaskRunner(self.win, self._tasks_changed)
         self._build_body()
+        self.output_pcb_report.trace_add("write", lambda *_: self._tasks_changed(tuple(self.tasks.pending)))
+        self._tasks_changed(())
+        self._apply_language()
+        self._ui_poll_id = self.win.after(600, self._refresh_ui_labels)
 
         if not brd_path and standalone:
             try:
@@ -72,7 +116,7 @@ class DFMDialog:
         if brd_path:
             self.params.brd_path.set(brd_path)
 
-        self.win.after(120, self._poll_brd_queue)
+        self._poll_id = self.win.after(120, self._poll_brd_queue)
         if self.brd_path.get().strip():
             self.params._set_brd_status("正在读取 BRD ...")
             self._load_from_brd()
@@ -81,39 +125,85 @@ class DFMDialog:
 
     # ------------------------------------------------------------ 组装
     def _build_header(self):
-        hdr = tk.Frame(self.win, bg=COLORS["header"], height=64)
+        hdr = tk.Frame(self.content, bg=COLORS["header"])
         hdr.pack(fill=tk.X)
-        hdr.pack_propagate(False)
 
         title_box = tk.Frame(hdr, bg=COLORS["header"])
         title_box.pack(side=tk.LEFT, padx=22, pady=10)
-        tk.Label(title_box, text="MPA-DFM", bg=COLORS["header"],
+        tk.Label(title_box, text="Evan · MPA-DFM", bg=COLORS["header"],
                  fg=COLORS["header_text"], font=self._fonts["title"]).pack(anchor=tk.W)
-        tk.Label(title_box, text="PCB 制造能力 · SMT 工艺能力 · Checklist",
+        tk.Label(title_box, text="PCB 制造能力 · SMT 工艺能力 · BRD 问题定位",
                  bg=COLORS["header"], fg=COLORS["header_muted"],
                  font=self._fonts["subtitle"]).pack(anchor=tk.W, pady=(2, 0))
 
-        btns = tk.Frame(hdr, bg=COLORS["header"])
-        btns.pack(side=tk.RIGHT, padx=22)
+        btns = FlowBar(self.content, padding=(12, 0))
+        btns.pack(fill=tk.X)
         self.run_button = ttk.Button(btns, text="执行 PCB 分析", style="Primary.TButton",
                                      command=self._run)
-        self.run_button.pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(btns, text="Checklist", style="Secondary.TButton",
-                   command=self._open_checklist).pack(side=tk.LEFT, padx=(0, 8))
+        btns.add(self.run_button)
+        self.open_brd_button = ttk.Button(btns, text="打开 BRD", style="Secondary.TButton",
+                                         command=self._open_brd_editor)
+        btns.add(self.open_brd_button)
 
-        ttk.Button(btns, text="器件统计", style="Secondary.TButton",
-                   command=self._open_component_stats).pack(side=tk.LEFT, padx=(0, 8))
+        btns.add(ttk.Button(btns, text="网络定位", style="Secondary.TButton", command=self._open_net_locate))
 
-        ttk.Button(btns, text="网络定位", style="Secondary.TButton",
-                   command=self._open_net_locate).pack(side=tk.LEFT, padx=(0, 8))
+        btns.add(ttk.Button(btns, text="关闭", style="Secondary.TButton", command=self._close))
+        settings = ttk.Frame(self.content, padding=(16, 3))
+        settings.pack(fill=tk.X)
+        ttk.Label(settings, text="语言").pack(side=tk.LEFT)
+        language = ttk.Combobox(settings, textvariable=self.language, values=("中文", "English"),
+                                state="readonly", width=9)
+        language.pack(side=tk.LEFT, padx=(6, 16))
+        language.bind("<<ComboboxSelected>>", lambda _: self._apply_language())
+        ttk.Label(settings, text="主题").pack(side=tk.LEFT)
+        theme = ttk.Combobox(settings, textvariable=self.color_mode, values=("Light", "Dark"),
+                             state="readonly", width=8)
+        theme.pack(side=tk.LEFT, padx=6)
+        theme.bind("<<ComboboxSelected>>", lambda _: self._apply_color_mode())
 
-        ttk.Button(btns, text="关闭", style="Secondary.TButton",
-                   command=self._close).pack(side=tk.LEFT)
+    def _save_ui_preferences(self):
+        from src.ui.prefs import load_prefs, save_prefs
+        prefs = load_prefs()
+        prefs.update(ui_language="en" if self.language.get() == "English" else "zh",
+                     ui_theme="dark" if self.color_mode.get() == "Dark" else "light")
+        save_prefs(prefs)
+
+    def _apply_language(self):
+        i18n.LANGUAGE = "en" if self.language.get() == "English" else "zh"
+        i18n.localize_widgets(self.win)
+        if self.last_result:
+            self.results.render_capability(self.last_result)
+        if self.smt.last_result:
+            self.smt._render_result(self.smt.last_result, self.smt._revision)
+        self._save_ui_preferences()
+
+    def _apply_color_mode(self):
+        old = set_color_mode("dark" if self.color_mode.get() == "Dark" else "light")
+        refresh_widget_colors(self.win, old)
+        self.params._render_fields()
+        self.results.refresh_colors()
+        self.smt.detail.configure(bg=COLORS["card"], fg=COLORS["text"], insertbackground=COLORS["text"])
+        self._tasks_changed(tuple(self.tasks.pending))
+        i18n.localize_widgets(self.win)
+        self._save_ui_preferences()
+
+    def _refresh_ui_labels(self):
+        self._ui_poll_id = None
+        if not self._alive:
+            return
+        i18n.localize_widgets(self.win)
+        if self.language.get() == "English":
+            self.win.title("Evan MPA-DFM - PCB / SMT Manufacturing Analysis")
+        else:
+            self.win.title("Evan MPA-DFM - PCB / SMT 制造能力分析")
+        self._ui_poll_id = self.win.after(600, self._refresh_ui_labels)
 
     def _build_report_bar(self):
-        bar = ttk.Frame(self.win, padding=(16, 6))
+        bar = ttk.Frame(self.content, padding=(16, 6))
         bar.pack(fill=tk.X)
         ttk.Label(bar, text="报告导出", style="FieldLabel.TLabel").pack(side=tk.LEFT, padx=(0, 12))
+        ttk.Combobox(bar, textvariable=self.report_format, values=(".xlsx", ".csv"),
+                     state="readonly", width=7).pack(side=tk.LEFT, padx=(0, 8))
         self.report_buttons = {}
         for kind, label in [("dfm", "DFM 综合报告"), ("pcb", "PCB 报告"), ("smt", "SMT 报告")]:
             button = ttk.Button(bar, text=label,
@@ -121,28 +211,160 @@ class DFMDialog:
                                 command=lambda k=kind: self._export(k))
             button.pack(side=tk.LEFT, padx=(0, 8))
             self.report_buttons[kind] = button
-        self.progress = ttk.Progressbar(bar, mode="indeterminate", length=130)
+        self.progress = ttk.Progressbar(bar, mode="indeterminate", length=130,
+                                        style="Idle.Horizontal.TProgressbar")
         self.progress.pack(side=tk.RIGHT)
         self.task_var = tk.StringVar(value="就绪")
-        ttk.Label(bar, textvariable=self.task_var).pack(side=tk.RIGHT, padx=12)
+        self.task_label = ttk.Label(bar, textvariable=self.task_var, foreground=COLORS["muted"])
+        self.task_label.pack(side=tk.BOTTOM, fill=tk.X)
+        wrap_label(self.task_label, bar)
+        self.task_dot = tk.Canvas(bar, width=16, height=16, bg=COLORS["bg"],
+                                  highlightthickness=0)
+        self.task_dot.pack(side=tk.RIGHT)
+        self._dot = self.task_dot.create_oval(3, 3, 13, 13, fill=COLORS["faint"], outline="")
+        options = ttk.Frame(self.content, padding=(16, 0))
+        options.pack(fill=tk.X)
+        ttk.Checkbutton(options, text="报告隐藏低优先级", variable=self.hide_low_priority).pack(side=tk.LEFT)
+        ttk.Checkbutton(options, text="需要独立 PCB 报告", variable=self.output_pcb_report).pack(side=tk.LEFT, padx=12)
+
+    def _build_coordinate_bar(self):
+        gerber = ttk.Frame(self.content, padding=(16, 3))
+        gerber.pack(fill=tk.X)
+        ttk.Checkbutton(gerber, text="执行分析时后台导出 Gerber", variable=self.auto_gerber).pack(side=tk.LEFT)
+        ttk.Entry(gerber, textvariable=self.gerber_dir, width=35).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=8)
+        ttk.Button(gerber, text="选择已有 Gerber", command=self._browse_gerber).pack(side=tk.LEFT)
+        ttk.Button(gerber, text="导出 Gerber", command=self._export_gerber_only).pack(side=tk.LEFT, padx=6)
+        ttk.Button(gerber, text="Gerber 问题预览", command=self._preview_gerber).pack(side=tk.LEFT)
+        bar = ttk.Frame(self.content, padding=(16, 2))
+        bar.pack(fill=tk.X)
+        ttk.Label(bar, text="问题坐标来源").pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Entry(bar, textvariable=self.coordinate_dir, width=40).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(bar, text="选择导出目录", command=self._browse_coordinates).pack(side=tk.LEFT, padx=6)
+        ttk.Button(bar, text="导入 COMP_XY", command=self._import_comp_xy).pack(side=tk.LEFT, padx=6)
+        ttk.Button(bar, text="生成 Allegro 坐标脚本", command=self._generate_coordinates).pack(side=tk.LEFT)
+        editor = ttk.Frame(self.content, padding=(16, 2))
+        editor.pack(fill=tk.X)
+        ttk.Button(editor, text="设置 PCB Editor", command=self._configure_editor).pack(side=tk.LEFT)
+        self.editor_export_button = ttk.Button(editor, text="打开 BRD 并提取坐标",
+                                               command=self._open_export_editor)
+        self.editor_export_button.pack(side=tk.LEFT, padx=6)
+        ttk.Checkbutton(editor, text="选点同步到 Allegro", variable=self.sync_editor).pack(side=tk.LEFT)
+        ttk.Checkbutton(editor, text="并排显示", variable=self.beside_editor).pack(side=tk.LEFT, padx=6)
+        editor_label = ttk.Label(editor, textvariable=self.editor_status)
+        editor_label.pack(side=tk.BOTTOM, fill=tk.X)
+        wrap_label(editor_label, editor)
+
+    def _browse_coordinates(self):
+        path = filedialog.askdirectory(parent=self.win, title="选择当前 BRD 的 SKILL / NC Drill 导出目录")
+        if path:
+            self.coordinate_dir.set(path)
+            self._refresh_component_coordinates(select_tab=True)
+
+    def _browse_gerber(self):
+        path = filedialog.askdirectory(parent=self.win, title="选择同一版本的一套 Gerber 目录")
+        if path:
+            self.auto_gerber.set(False)
+            self.gerber_dir.set(path)
+
+    def _export_gerber_only(self):
+        from src.gerber_export import export_brd_gerbers
+        path = self.brd_path.get().strip()
+        if not os.path.isfile(path):
+            messagebox.showwarning("Gerber", "请先选择 BRD", parent=self.win)
+            return
+        editor = self.editor_path.get()
+        output = os.path.join(os.path.dirname(os.path.abspath(path)), "Gerber_DFM")
+        def done(bundle):
+            self._exported_gerber = bundle
+            self.auto_gerber.set(False)
+            self.gerber_dir.set(bundle["directory"])
+            self.status_var.set(f"Gerber 已导出：{len(bundle['files'])} 层；点击执行分析")
+        self.tasks.submit("gerber-export", lambda: export_brd_gerbers(path, output, editor), done,
+                          lambda error: messagebox.showerror("Gerber 导出失败", error, parent=self.win))
+
+    def _preview_gerber(self):
+        path = (self.last_result or {}).get("gerber_preview")
+        if path and os.path.isfile(path):
+            import webbrowser
+            from pathlib import Path
+            webbrowser.open(Path(path).as_uri())
+        else:
+            messagebox.showinfo("Gerber", "请先完成 Gerber 分析，再打开问题预览", parent=self.win)
+
+    def _import_comp_xy(self):
+        from src.pick import parse_placement_txt
+        from src.pcb_locations import component_coordinates
+        path = filedialog.askopenfilename(parent=self.win, title="选择 BRD 导出的 COMP_XY 坐标文件",
+                                         filetypes=[("COMP_XY 坐标", "*.txt"), ("所有文件", "*.*")])
+        if not path:
+            return
+        parsed = parse_placement_txt(path)
+        if not parsed.get("ok"):
+            messagebox.showerror("坐标导入", parsed.get("error", "未读到坐标"), parent=self.win)
+            return
+        self.coordinate_dir.set(os.path.dirname(path))
+        unit = (self.brd_info or {}).get("units") or parsed.get("unit")
+        coordinates = component_coordinates({"components": parsed["items"]}, unit)
+        self._component_coordinates = coordinates
+        self._component_brd_path = os.path.normcase(os.path.abspath(self.brd_path.get().strip()))
+        self.results.show_components(coordinates, "COMP_XY 器件原点；丝印需另外的图形导出")
+        self.results.nb.select(2)
+        self.editor_status.set(f"已导入 COMP_XY：{len(coordinates)} 个器件坐标")
+        if self.brd_path.get().strip() and not self._loading and "pcb-analysis" not in self.tasks.pending:
+            self._run()
+
+    def _generate_coordinates(self):
+        from src.allegro_skill import write_bundle
+        folder = filedialog.askdirectory(parent=self.win, title="选择坐标脚本和 CSV 输出目录")
+        if not folder:
+            return
+        try:
+            paths = write_bundle(folder)
+        except OSError as exc:
+            messagebox.showerror("生成失败", str(exc), parent=self.win)
+            return
+        self.coordinate_dir.set(folder)
+        command = 'skill load("' + paths["il"].replace("\\", "/") + '")\n'
+        command += 'skill evan_pick_all("' + os.path.abspath(folder).replace("\\", "/") + '")\n'
+        command += 'skill load("' + paths["geometry_il"].replace("\\", "/") + '")\n'
+        command += 'skill evan_geometry_all("' + os.path.abspath(folder).replace("\\", "/") + '")'
+        self.win.clipboard_clear()
+        self.win.clipboard_append(command)
+        messagebox.showinfo("坐标导出", "命令已复制。在 Allegro 打开同一版本 BRD，执行：\n\n" + command +
+                            "\n\n导出后重新执行 PCB 分析，报告将包含问题 X/Y 和定位命令。", parent=self.win)
 
     def _tasks_changed(self, pending):
-        self.run_button.configure(state=tk.DISABLED if self._loading or "pcb-analysis" in pending else tk.NORMAL)
+        self.run_button.configure(state=tk.DISABLED if self._loading or "pcb-analysis" in pending or "gerber-export" in pending else tk.NORMAL)
         for button in self.report_buttons.values():
             button.configure(state=tk.DISABLED if "report-export" in pending else tk.NORMAL)
+        if not self.output_pcb_report.get():
+            self.report_buttons["pcb"].configure(state=tk.DISABLED)
         if pending:
-            self.task_var.set("后台处理中 · " + " / ".join(pending))
+            names = {"pcb-analysis": "PCB 分析", "smt-analysis": "SMT 分析",
+                     "report-export": "报告导出"}
+            self.task_var.set("处理中 · " + " / ".join(names.get(p, p) for p in pending))
+            self.task_label.configure(foreground=COLORS["primary"])
+            self.task_dot.itemconfigure(self._dot, fill=COLORS["primary"])
+            self.progress.configure(mode="indeterminate", style="Running.Horizontal.TProgressbar")
             self.progress.start(15)
         else:
-            self.task_var.set("就绪")
             self.progress.stop()
+            color = COLORS["primary"] if self._pcb_state == "complete" else (
+                COLORS["danger"] if self._pcb_state == "error" else COLORS["faint"])
+            self.task_var.set({"complete": "PCB 分析完成", "error": "PCB 分析失败"}.get(
+                self._pcb_state, "就绪"))
+            self.task_label.configure(foreground=color)
+            self.task_dot.itemconfigure(self._dot, fill=color)
+            self.progress.configure(mode="determinate", value=100 if self._pcb_state == "complete" else 0,
+                                    style="Complete.Horizontal.TProgressbar" if self._pcb_state == "complete"
+                                    else "Idle.Horizontal.TProgressbar")
 
     def _build_body(self):
-        self.workbench = ttk.Notebook(self.win)
+        self.workbench = ttk.Notebook(self.content)
         self.workbench.pack(fill=tk.BOTH, expand=True, padx=12, pady=10)
         body = ttk.Frame(self.workbench, style="TFrame", padding=(16, 14, 16, 12))
         self.workbench.add(body, text="PCB 厂 · 制造能力分析")
-        body.columnconfigure(0, weight=0, minsize=384)
+        body.columnconfigure(0, weight=1, minsize=350)
         body.columnconfigure(1, weight=1)
         body.rowconfigure(0, weight=1)
 
@@ -156,8 +378,11 @@ class DFMDialog:
         self.params.pack(fill=tk.BOTH, expand=True)
 
         self.results = ResultPanel(right_card.content,
-                                   on_locate=self._open_locate)
+                                    on_locate=self._open_locate,
+                                    on_open_point=self._open_problem_point,
+                                    on_point_selected=self._sync_problem_point)
         self.results.pack(fill=tk.BOTH, expand=True)
+        body.configure(height=600)
 
         # 兼容旧属性名 (早期代码/测试直接访问这些变量)
         self.brd_path = self.params.brd_path
@@ -173,19 +398,26 @@ class DFMDialog:
         self.smt = SMTPanel(self.workbench, self._smt_design, self.tasks,
                             on_export=lambda: self._export("smt"))
         self.workbench.add(self.smt, text="SMT 厂 · 工艺能力分析 / YAML")
+        self.smt.detail.configure(bg=COLORS["card"], fg=COLORS["text"], insertbackground=COLORS["text"])
         for var in list(self.entries.values()) + [self.params.factory, self.params.level,
                     self.params.board_type, self.params.copper_oz, self.params.surface_finish,
                     self.params.board_name, self.params.polarity_var, self.params.panelized_var,
-                    self.brd_path]:
+                    self.brd_path, self.coordinate_dir, self.gerber_dir, self.auto_gerber]:
             var.trace_add("write", self._invalidate_results)
 
     def _invalidate_results(self, *_args):
         self._input_revision += 1
         self.last_result = None
         self.last_design = {}
-        self.results.clear()
+        path = self.brd_path.get().strip()
+        same_board = bool(self._component_brd_path) and os.path.normcase(os.path.abspath(path)) == self._component_brd_path
+        self.results.clear(clear_components=not same_board)
+        if not same_board:
+            self._component_coordinates = []
         self.result_var.set("输入已变化，请重新执行 PCB 分析")
         self.smt.invalidate()
+        self._pcb_state = "idle"
+        self._tasks_changed(tuple(self.tasks.pending))
 
     def _smt_design(self):
         if self._loading:
@@ -196,6 +428,176 @@ class DFMDialog:
         design = self.params.read_design()
         design["_input_brd"] = path
         return design
+
+    def _configure_editor(self):
+        path = filedialog.askopenfilename(parent=self.win, title="选择 Allegro PCB Editor (allegro.exe)",
+                                         filetypes=[("Windows 程序", "*.exe")])
+        if path:
+            self.editor_path.set(path)
+            from src.ui.prefs import load_prefs, save_prefs
+            prefs = load_prefs()
+            prefs["allegro_editor"] = path
+            save_prefs(prefs)
+
+    def _editor_for_current_board(self):
+        session = self._editor_session
+        path = self.brd_path.get().strip()
+        return session if (session and session.running() and
+                           os.path.normcase(os.path.abspath(path)) == os.path.normcase(session.brd_path)) else None
+
+    def _start_editor(self, point=None, export=False):
+        path = self.brd_path.get().strip()
+        if not os.path.isfile(path):
+            messagebox.showwarning("打开 BRD", "请先选择有效的 BRD 文件", parent=self.win)
+            return
+        if point is not None:
+            if point.get("brd_alignment") is False:
+                messagebox.showinfo("坐标原点", "该 Gerber 未确认与 BRD 原点一致，请使用 Gerber 问题预览查看位置。",
+                                    parent=self.win)
+                return
+            try:
+                point_mm(point)
+            except ValueError as exc:
+                messagebox.showinfo("问题定位", str(exc), parent=self.win)
+                return
+        session = self._editor_for_current_board()
+        if session and export and self._editor_export_pending:
+            self.editor_status.set("Allegro：正在提取当前 BRD 坐标，请等待…")
+            return
+        if session and not export:
+            if point is not None:
+                try:
+                    session.locate(point)
+                except (OSError, ValueError) as exc:
+                    messagebox.showerror("问题定位", str(exc), parent=self.win)
+                    return
+                self.editor_status.set("Allegro：正在同步问题点…")
+            self._editor_layout_requested = True
+            self._editor_arranged = False
+            self._schedule_editor_poll()
+            return
+        editor = discover_editor(self.editor_path.get())
+        if not editor:
+            self._configure_editor()
+            editor = discover_editor(self.editor_path.get())
+            if not editor:
+                messagebox.showwarning("PCB Editor", "未找到 PCB Editor，请设置 allegro.exe 路径", parent=self.win)
+                return
+        try:
+            session = AllegroSession(path, editor)
+            # Keep exports next to the board: next launch can rediscover them.
+            output = os.path.join(os.path.dirname(os.path.abspath(path)), "定位清单", "allegro_bridge") if export else ""
+            session.prepare(export_dir=output)
+            if point is not None:
+                session.locate(point)
+            session.launch()
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("打开 BRD 失败", str(exc), parent=self.win)
+            return
+        self._editor_session = session
+        self._editor_started = time.monotonic()
+        self._editor_last_ack = None
+        self._editor_export_pending = export
+        self._editor_layout_requested = True
+        self._editor_arranged = False
+        self.editor_status.set("Allegro：正在打开 BRD" + ("并导出坐标…" if export else "…"))
+        self._schedule_editor_poll()
+
+    def _open_brd_editor(self):
+        self._open_export_editor()
+
+    def _open_export_editor(self):
+        if "pcb-analysis" in self.tasks.pending or self._loading:
+            messagebox.showinfo("坐标提取", "请等待当前 PCB 读取/分析完成", parent=self.win)
+            return
+        self._start_editor(export=True)
+
+    def _open_problem_point(self, point):
+        self._start_editor(point=point)
+
+    def _sync_problem_point(self, point):
+        if point.get("brd_alignment") is False:
+            return
+        if self.sync_editor.get():
+            session = self._editor_for_current_board()
+            if session:
+                try:
+                    session.locate(point)
+                    self.editor_status.set("Allegro：正在同步问题点…")
+                except (OSError, ValueError) as exc:
+                    self.editor_status.set("Allegro：同步失败 " + str(exc))
+
+    def _schedule_editor_poll(self):
+        if self._alive and self._editor_poll_id is None:
+            self._editor_poll_id = self.win.after(350, self._poll_editor)
+
+    def _poll_editor(self):
+        self._editor_poll_id = None
+        session = self._editor_session
+        if not self._alive or session is None:
+            return
+        sequence, state = session.status()
+        current_board = self._editor_for_current_board() is not None
+        if not session.running():
+            self.editor_status.set("Allegro：已关闭或启动失败，请检查许可/板文件")
+            return
+        if not current_board:
+            self.editor_status.set("Allegro：BRD 已切换，请重新打开当前板")
+        elif (sequence, state) != self._editor_last_ack:
+            labels = {"READY": "已连接", "LOCATED": "已定位选中问题点", "BOARD_CHANGED": "Editor 已换板，请重新打开",
+                      "ZOOM_FAILED": "缩放失败", "TIMER_FAILED": "同步定时器不可用"}
+            if state != "WAITING":
+                self.editor_status.set("Allegro：" + labels.get(state, state))
+                self._editor_last_ack = (sequence, state)
+        if current_board and self._editor_export_pending and state in ("READY", "LOCATED"):
+            self._editor_export_pending = False
+            self.coordinate_dir.set(session.export_dir)
+            self._refresh_component_coordinates(auto_analyze=True, select_tab=True)
+        if current_board and self.beside_editor.get() and self._editor_layout_requested and not self._editor_arranged:
+            self._editor_arranged = arrange_editor(session.process.pid, self.win.winfo_id())
+            if self._editor_arranged:
+                self._editor_layout_requested = False
+        if current_board and state == "WAITING" and time.monotonic() - self._editor_started > 30:
+            self.editor_status.set("Allegro：等待连接；请完成许可选择/打开板，再查看启动脚本")
+        elif current_board and session.sequence > (sequence or 0) and time.monotonic() - session.request_time > 8:
+            self.editor_status.set("Allegro：定位待响应，请结束 Editor 当前交互命令")
+        self._schedule_editor_poll()
+
+    def _refresh_component_coordinates(self, auto_analyze=False, select_tab=False):
+        from src.pick import build_inventory
+        from src.pcb_locations import component_coordinates
+        from src.net_locate import parse_traces_csv
+        path = self.brd_path.get().strip()
+        directory = self.coordinate_dir.get().strip()
+        unit = (self.brd_info or {}).get("units", "")
+        self._coordinate_load_token += 1
+        token = self._coordinate_load_token
+
+        def work():
+            search = [directory] if directory else [os.path.join(os.path.dirname(os.path.abspath(path)), "定位清单")]
+            inventory = build_inventory("" if directory else path, extra_dirs=search)
+            coordinates = component_coordinates(inventory, unit)
+            trace = parse_traces_csv(os.path.join(directory, "evan_traces.csv")) if directory else {}
+            return coordinates, bool(inventory.get("holes") or trace.get("items"))
+
+        def done(payload):
+            if (token != self._coordinate_load_token or path != self.brd_path.get().strip()
+                    or directory != self.coordinate_dir.get().strip()):
+                return
+            coordinates, has_geometry = payload
+            self._component_coordinates = coordinates
+            self._component_brd_path = os.path.normcase(os.path.abspath(path))
+            self.results.show_components(coordinates, "" if coordinates else "未读到器件放置原点；请点「打开 BRD」提取")
+            if select_tab:
+                self.results.nb.select(2)
+            if auto_analyze:
+                self.editor_status.set(f"Allegro：已提取 {len(coordinates)} 个器件 X/Y" if coordinates else
+                                       "Allegro：没有器件原点，请检查 evan_pick.log")
+                if (coordinates or has_geometry) and not self._loading and "pcb-analysis" not in self.tasks.pending:
+                    self._run()
+
+        self.tasks.submit("component-coordinates-" + str(token), work, done,
+                          lambda error: self.editor_status.set("器件坐标读取失败：" + error))
 
     def _open_checklist(self):
         from src.ui.main_window import MainWindow
@@ -321,6 +723,7 @@ class DFMDialog:
                     self.brd_info = payload
                     self.params.apply_brd(payload)
                     self._loaded_path = path
+                    self._refresh_component_coordinates()
                 else:
                     self._set_brd_status(f"读取 BRD 失败: {payload}")
         except queue.Empty:
@@ -334,6 +737,11 @@ class DFMDialog:
             pass
 
     def _close(self):
+        if self._checklist_window and self._checklist_window.root.winfo_exists():
+            if self._checklist_window.tasks.pending:
+                messagebox.showinfo("正在生成报告", "请等待 Checklist 报告生成完成后再关闭。", parent=self.win)
+                return
+            self._checklist_window._close()
         self._alive = False
         self.tasks.close()
         self._cancel_poll()
@@ -346,9 +754,22 @@ class DFMDialog:
         if event is not None and event.widget is not self.win:
             return
         self._alive = False
+        self.tasks.close()
         self._cancel_poll()
 
     def _cancel_poll(self):
+        if self._ui_poll_id is not None:
+            try:
+                self.win.after_cancel(self._ui_poll_id)
+            except tk.TclError:
+                pass
+            self._ui_poll_id = None
+        if self._editor_poll_id is not None:
+            try:
+                self.win.after_cancel(self._editor_poll_id)
+            except tk.TclError:
+                pass
+            self._editor_poll_id = None
         if self._poll_id is not None:
             try:
                 self.win.after_cancel(self._poll_id)
@@ -374,21 +795,45 @@ class DFMDialog:
         options = dict(board_type=self.params.board_type.get(),
                        capability_level=self.params.level.get(), factory=self.params.factory.get())
         brd_path = self.brd_path.get().strip()
+        coordinate_dir = self.coordinate_dir.get().strip()
+        design_unit = (self.brd_info or {}).get("units", "")
+        gerber_dir = self.gerber_dir.get().strip()
+        auto_gerber = self.auto_gerber.get()
+        editor_path = self.editor_path.get()
 
         def compute():
+            from src.pcb_locations import attach_locations
             result = analyze_design(design, **options)
             result["analyzed_at"] = datetime.now().isoformat(timespec="seconds")
             result["input_brd"] = brd_path
+            result = attach_locations(result, brd_path, design_unit=design_unit,
+                                      extra_dirs=[coordinate_dir] if coordinate_dir else [])
+            if (auto_gerber and brd_path) or gerber_dir:
+                from src.gerber_export import export_brd_gerbers
+                from src.gerber_analysis import analyze_gerbers, attach_gerber_result, write_preview
+                folder = gerber_dir
+                if auto_gerber and brd_path:
+                    bundle = export_brd_gerbers(brd_path,
+                        os.path.join(os.path.dirname(os.path.abspath(brd_path)), "Gerber_DFM"), editor_path)
+                    folder = bundle["directory"]
+                    result["gerber_export_warnings"] = bundle["warnings"]
+                geometry = analyze_gerbers(folder, options["factory"], options["board_type"], options["capability_level"],
+                                          copper_oz=design.get("copper_oz", 1.0))
+                result = attach_gerber_result(result, geometry, design_unit)
+                result["gerber_preview"] = write_preview(geometry, os.path.join(folder, "DFM_Gerber_preview.html"))
             return result
 
         def complete(result):
             if revision != self._input_revision:
+                self._pcb_state = "idle"
                 self.status_var.set("PCB 分析期间输入已变化，已丢弃过期结果，请重新分析")
                 return
             self._render_pcb(result, design)
+            self._pcb_state = "complete"
 
         def failed(error):
             if revision == self._input_revision:
+                self._pcb_state = "error"
                 messagebox.showerror("PCB 分析失败", error, parent=self.win)
 
         if self.tasks.submit("pcb-analysis", compute, complete, failed):
@@ -437,6 +882,8 @@ class DFMDialog:
 
     # ------------------------------------------------------------ 导出
     def _export(self, kind="pcb"):
+        if kind == "pcb" and not self.output_pcb_report.get():
+            return
         if "report-export" in self.tasks.pending:
             return
         if kind in ("dfm", "pcb") and not self.last_result:
@@ -451,13 +898,14 @@ class DFMDialog:
         board_meta = {"board_name": self.last_design.get("board_name", "") or
                       (smt or {}).get("board_name", ""),
                       "brd_path": self.brd_path.get().strip(), "submitter": "MPA-DFM",
-                      "rule_set": "BRD 带入 + 已确认参数"}
+                       "rule_set": "BRD 带入 + 已确认参数"}
+        board_meta["hide_low_priority"] = self.hide_low_priority.get()
         labels = {"dfm": "DFM综合报告", "pcb": "PCB报告", "smt": "SMT报告"}
         path = filedialog.asksaveasfilename(
             parent=self.win, title="导出 " + labels[kind],
-            defaultextension=".xlsx",
-            initialfile=labels[kind] + ".xlsx",
-            filetypes=[("Excel", "*.xlsx"), ("All files", "*.*")],
+            defaultextension=self.report_format.get(),
+            initialfile=labels[kind] + self.report_format.get(),
+            filetypes=[("Excel 工作簿", "*.xlsx"), ("CSV 表格 (UTF-8)", "*.csv")],
         )
         if not path:
             return

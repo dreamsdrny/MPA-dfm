@@ -35,7 +35,9 @@ DEMO_DESIGN = {
 }
 
 
+# 定义一个内部日志辅助函数，用于条件化地输出日志信息
 def _log(log, text, tag=None):
+    # 如果传入了日志回调函数（log 不为 None 或 False），则调用它输出文本和可选的标签
     if log:
         log(text, tag)
 
@@ -166,8 +168,8 @@ def run(*, checklist_path: str = "", output_dir: str = "", brd_path: str = "",
         design, extracted = dict(DEMO_DESIGN), {}
     else:
         design, extracted = _read_design(brd_path, board_info.get("layer_count", 0))
-    design.setdefault("copper_um", copper_val)
-    design.setdefault("copper_oz", copper_oz_val)
+    design["copper_um"] = copper_val
+    design["copper_oz"] = copper_oz_val
     design.setdefault("board_type", board_type)
     dfm_result = analyze_design(design, board_type=board_type,
                                capability_level=level, factory=factory)

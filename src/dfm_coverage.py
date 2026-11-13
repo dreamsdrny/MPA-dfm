@@ -59,12 +59,12 @@ CAP_ITEMS = {
     "drill/npth_to_edge": ("钻孔", "NPTH 孔到板边", "npth_to_edge", "ge",
                            "NPTH 孔坐标与板框 (mm)"),
     # ---- 电镀 ----
-    "plating/blind_via_fill_aspect": ("电镀", "盲孔填孔纵横比", "plug_hole_diameter", "le",
+    "plating/blind_via_fill_aspect": ("电镀", "盲孔填孔纵横比", "blind_via_fill_aspect", "ge",
                                       "盲孔孔径与孔深 (mm)"),
     "plating/blind_via_fill_rate": ("电镀", "盲孔填孔率", None, None, "填孔检测数据 (%)"),
     "plating/blind_via_fill_dimple": ("电镀", "盲孔凹陷", None, None, "填孔凹陷检测 (um)"),
     "plating/plating_uniformity": ("电镀", "镀层均匀性", None, None, "电镀均匀性报告 (um)"),
-    "plating/pth_aspect_ratio": ("电镀", "PTH 纵横比", "min_drill_for_ar", "le",
+    "plating/pth_aspect_ratio": ("电镀", "PTH 纵横比", None, None,
                                  "板厚与最小孔径 (mm)"),
     # ---- 塞孔 ----
     "plug_hole/ink_plug_depth": ("塞孔", "油墨塞孔深度", "ink_plug_depth_percent", "ge",
@@ -72,7 +72,7 @@ CAP_ITEMS = {
     "plug_hole/resin_plug_depth": ("塞孔", "树脂塞孔深度", "resin_plug_depth_percent", "ge",
                                    "树脂塞孔深度 (%)"),
     "plug_hole/resin_plug_cap_copper": ("塞孔", "树脂塞孔盖铜", None, None, "盖铜厚度 (um)"),
-    "plug_hole/plug_aspect_ratio": ("塞孔", "塞孔纵横比", "plug_hole_diameter", "le",
+    "plug_hole/plug_aspect_ratio": ("塞孔", "塞孔纵横比", "plug_hole_aspect_ratio", "le",
                                     "塞孔孔径与板厚 (mm)"),
     "plug_hole/plug_alignment": ("塞孔", "塞孔对位精度", None, None, "塞孔对位检测 (mil)"),
     # ---- 阻焊 ----

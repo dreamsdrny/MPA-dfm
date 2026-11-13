@@ -334,8 +334,11 @@ def cap_placement(ctx: Context) -> Result:
     for c in comps:
         sides[c.get("side") or "?"] = sides.get(c.get("side") or "?", 0) + 1
         rot = c.get("rotation")
-        if rot is not None:
-            key = f"{round(float(rot) / 90) * 90:.0f}°"
+        if rot is not None and str(rot).strip():
+            try:
+                key = f"{round(float(rot) / 90) * 90:.0f}°"
+            except (TypeError, ValueError):
+                key = "未知角度"
             rots[key] = rots.get(key, 0) + 1
     res.status = PASS
     res.metric("有坐标的器件", len(comps), "个", "导入的 Placement/SKILL 坐标文件", "high")

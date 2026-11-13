@@ -281,7 +281,7 @@ def _is_through_span(span: str) -> bool:
     return parts[0].strip().upper() == "TOP" and parts[1].strip().upper() == "BOTTOM"
 
 
-def extract_brd_design(path: str) -> dict:
+def extract_brd_design(path: str, raw: Optional[bytes] = None) -> dict:
     """解析 .brd, 返回 {ok, error?, meta, design...}。
 
     数据来源分两层:
@@ -297,8 +297,9 @@ def extract_brd_design(path: str) -> dict:
     result["board_name"] = os.path.splitext(os.path.basename(path))[0]
 
     try:
-        with open(path, "rb") as f:
-            raw = f.read()
+        if raw is None:
+            with open(path, "rb") as f:
+                raw = f.read()
         objects, info = read_brd_objects(path, raw)
     except Exception as exc:  # noqa: BLE001
         result["error"] = str(exc)
