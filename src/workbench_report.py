@@ -16,6 +16,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from src.dfm_report import build_dfm_workbook, generate_dfm_text
 from src.smt_engine import STATUSES, append_smt_sheets, export_smt_report
 from src.pcb_locations import LOCATION_HEADERS, location_values
+from src.excel_layout import format_workbook
 
 
 def combined_verdict(pcb, smt):
@@ -145,13 +146,17 @@ def export_report(kind, path, pcb=None, smt=None, board_meta=None):
             suffixes = (".csv",)
         elif kind == "smt":
             export_smt_report(smt, staged)
+            from openpyxl import load_workbook
+            workbook=load_workbook(staged)
+            format_workbook(workbook).save(staged)
+            workbook.close()
             suffixes = (".xlsx", ".json")
         elif kind == "pcb":
-            build_dfm_workbook(pcb, board_meta).save(staged)
+            format_workbook(build_dfm_workbook(pcb, board_meta)).save(staged)
             generate_dfm_text(pcb, str(staged.with_suffix(".txt")), board_meta)
             suffixes = (".xlsx", ".txt")
         else:
-            build_combined_workbook(pcb, smt, board_meta).save(staged)
+            format_workbook(build_combined_workbook(pcb, smt, board_meta)).save(staged)
             pcb_text = Path(tmp) / "pcb.txt"
             generate_dfm_text(pcb, str(pcb_text), board_meta)
             text = ["DFM 综合报告（PCB + SMT）", f"综合结论：{combined_verdict(pcb, smt)}",

@@ -32,6 +32,14 @@ def main(argv=None) -> int:
     enable_dpi_awareness()
     root = tk.Tk()
     root.withdraw()
+    from src.startup_guard import check_startup
+    license_path = None
+    if "--license" in argv:
+        index=argv.index("--license")
+        if index+1<len(argv):license_path=argv[index+1]
+    if check_startup(root,license_path) is None:
+        root.destroy()
+        return 1
     dialog = DFMDialog(root, brd_path=brd, standalone=True)
     dialog.win.deiconify()
     dialog.win.mainloop()
