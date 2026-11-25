@@ -171,7 +171,7 @@ class StoreCheckTests(unittest.TestCase):
     def test_name_info_extracts_part_and_revision(self):
         info = store_module.name_info("S-860-000000_FAB_BRD_Rev_E.brd")
         self.assertEqual(info["part_number"], "S-860-000000")
-        self.assertEqual(info["core"], "860-000739")
+        self.assertEqual(info["core"], "860-000000")
         self.assertEqual(info["rev"], "E")
         info = store_module.name_info("S-850-000000_BOM_REVG.BOM.xlsx")
         self.assertEqual(info["part_number"], "S-850-000000")

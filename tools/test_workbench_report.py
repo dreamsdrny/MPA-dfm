@@ -21,12 +21,14 @@ ROOT = Path(__file__).resolve().parents[1]
 class Reports(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        profile = ROOT / "config" / "suppliers" / "smt" / "smt_capability_lijing.yaml"
+        if not profile.is_file():
+            raise unittest.SkipTest("本地供应商能力配置缺失: config/suppliers/smt/smt_capability_lijing.yaml")
         info = extract_brd_design(str(ROOT / "demo" / "DEMO_BOARD.brd"))
         values, sources = brd_design_values(info)
         values["_sources"] = sources
         cls.pcb = analyze_design(values)
-        cls.smt = analyze_smt(load_smt_profile(ROOT / "config" / "smt_capability_template.yaml"),
-                              "standard", {})
+        cls.smt = analyze_smt(load_smt_profile(profile), "automotive", {})
 
     def test_combined_preserves_both_sections_and_links(self):
         wb = build_combined_workbook(self.pcb, self.smt, dict(board_name="TEST-BOARD"))

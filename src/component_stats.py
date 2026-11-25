@@ -528,7 +528,8 @@ def export_component_csv(inv: dict, path: str) -> str:
     path = os.path.abspath(path)
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.writer(f)
+        from src.csv_safety import SafeCSVWriter
+        writer = SafeCSVWriter(f)
         writer.writerow(_DETAIL_HEADERS)
         writer.writerows(_detail_rows(inv))
     return path

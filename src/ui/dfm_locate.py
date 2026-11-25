@@ -9,12 +9,12 @@
 """
 import os
 import queue
-import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from src import pick
-from src.allegro_skill import write_bundle
+from src.application import locations as pick
+from src.application.cad_tools import write_bundle
+from src.ui.tasks import TaskRunner
 from src.ui.theme import COLORS, Card, LogView, apply_theme, fonts
 
 _KIND_LABEL = {"skill": "SKILL 导出", "placement": "Placement 导出",
@@ -59,9 +59,9 @@ class LocateDialog:
 
         self.status_var = tk.StringVar(value="就绪")
         self._build()
+        self.tasks = TaskRunner(self.win)
         self._scan()
         self.win.after(180, self._focus_first)
-        self.win.after(120, self._poll_queue)
 
     # ------------------------------------------------------------ 组装
     def _build(self):
@@ -227,7 +227,8 @@ class LocateDialog:
                     out_dir=self.out_dir, result=self.result,
                     board_type=self.board_type, level=self.level,
                     factory=self.factory, base_name=self.base_name)
-        threading.Thread(target=self._worker, args=(args,), daemon=True).start()
+        self.tasks.submit("locate", lambda: pick.analyze_and_locate(**args), self._done,
+                          self._failed, lambda: setattr(self, "_busy", False))
 
     def _worker(self, args):
         """后台只做计算, 结果进队列, 由主线程的 _poll_queue 取 (Tk 跨线程不安全)。"""

@@ -15,7 +15,7 @@ from src.brd_analysis.imports import parse_drc_report
 
 class LocationsTests(unittest.TestCase):
     def test_maximum_drill_and_all_minimum_violations(self):
-        inventory = {"holes": [dict(x_mm=i, y_mm=-i, drill_mm=d)
+        inventory = {"holes": [dict(x_mm=i, y_mm=-i, drill_mm=d, hole_kind="through")
                                for i, d in enumerate((0.1, 0.15, 0.2, 6, 7))]}
         result = {"items": [dict(field="min_mech_drill", design=0.1, capability=0.2, status="fail"),
                             dict(field="max_mech_drill", design=7, capability=5, status="fail")]}
@@ -24,7 +24,7 @@ class LocationsTests(unittest.TestCase):
         self.assertEqual(rows[1]["coords"][1]["drill_mm"], 7)
 
     def test_no_silent_coordinate_limit(self):
-        inventory = {"holes": [dict(x_mm=i, y_mm=0, drill_mm=0.1) for i in range(85)]}
+        inventory = {"holes": [dict(x_mm=i, y_mm=0, drill_mm=0.1, hole_kind="through") for i in range(85)]}
         result = {"items": [dict(field="min_mech_drill", design=0.1, capability=0.2, status="fail")]}
         self.assertEqual(len(locate_failures(result, inventory)[0]["coords"]), 85)
 
@@ -39,7 +39,12 @@ class LocationsTests(unittest.TestCase):
             self.assertEqual(parsed["items"][0]["net"], "GND,A")
             result = attach_locations(analyze_design({"min_mech_drill": 0.127}),
                                       files=[str(holes)], design_unit="mils")
-            point = next(p for p in result["problem_locations"] if "x_mm" in p)
+            self.assertFalse(any("x_mm" in p for p in result["problem_locations"]))
+            # A generic VIA/padstack name does not prove through-hole usage.
+            result["problem_locations"] = [dict(item="测试点", field="", status="warn_limit",
+                location_status="待确认", x_mm=-100.5 * 0.0254, y_mm=200.25 * 0.0254,
+                x_brd=-100.5, y_brd=200.25, brd_unit="mil", command="x -100.500000 200.250000")]
+            point = result["problem_locations"][0]
             result["component_coordinates"] = [dict(refdes="U1", item="器件 U1", x_mm=-2.54, y_mm=0,
                 x_brd=-100, y_brd=0, brd_unit="mil", side="TOP", command="x -100 0")]
             self.assertEqual(point["x_brd"], -100.5)
@@ -76,7 +81,7 @@ class LocationsTests(unittest.TestCase):
             dict(copper_min_um=0, copper_max_um=35, line_um=75, space_um=75),
             dict(copper_min_um=36, copper_max_um=70, line_um=100, space_um=100),
             dict(copper_min_um=71, copper_max_um=105, line_um=150, space_um=150)]}}
-        self.assertEqual(get_line_spacing_capability(table, 70.5), (100, 100))
+        self.assertEqual(get_line_spacing_capability(table, 70.5), (None, None))
 
     def test_explicit_zero_drc_is_recognized(self):
         with tempfile.TemporaryDirectory() as folder:

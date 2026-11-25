@@ -1,0 +1,4 @@
+refdes,x_mm,y_mm,rotation,side,footprint
+R1,10.0,15.0,90,TOP,0603
+C1,12.0,15.0,0,TOP,0402
+U1,20.0,25.0,180,BOTTOM,QFN32

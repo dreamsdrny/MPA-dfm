@@ -22,19 +22,31 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from src.ui.dfm_dialog import DFMDialog
-from src.ui.fields import BRD_COMPONENT_CAP as _BRD_COMPONENT_CAP  # noqa: F401  旧名兼容
-from src.ui.fields import DFM_FIELDS
-from src.ui.main_window import MainWindow
-from src.ui.paths import app_base_dir, default_output_dir
-
-BRD_AIGUI = MainWindow
 
 __all__ = ["BRD_AIGUI", "MainWindow", "DFMDialog", "DFM_FIELDS",
-           "app_base_dir", "default_output_dir"]
+            "app_base_dir", "default_output_dir"]
+
+
+def __getattr__(name):
+    if name in ("MainWindow", "BRD_AIGUI"):
+        from src.ui.main_window import MainWindow
+        return MainWindow
+    if name == "DFMDialog":
+        from src.ui.dfm_dialog import DFMDialog
+        return DFMDialog
+    if name in ("DFM_FIELDS", "_BRD_COMPONENT_CAP"):
+        from src.application import pcb_inputs
+        return getattr(pcb_inputs, "BRD_COMPONENT_CAP" if name == "_BRD_COMPONENT_CAP" else name)
+    if name in ("app_base_dir", "default_output_dir"):
+        from src.infrastructure import paths
+        return getattr(paths, name)
+    raise AttributeError(name)
 
 
 def main():
+    from src.bootstrap import prepare_startup
+    prepare_startup()
+    from src.ui.main_window import MainWindow
     MainWindow().run()
 
 

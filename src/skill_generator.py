@@ -3,8 +3,11 @@ BRD-AI: SKILL脚本生成器 (Module 5)
 将约束规则转换为Cadence Allegro可执行的SKILL脚本
 """
 from jinja2 import Template
+from copy import deepcopy
+import math
 from typing import Dict, Any, List
 import os
+import re
 
 
 SKILL_TEMPLATE = """\
@@ -118,9 +121,41 @@ SKILL_TEMPLATE = """\
   )
 )
 
-; ---- 执行 ----
-(BRD_AI_CreateAllConstraints)
+; 不自动执行；需在隔离副本核实接口后由人工调用 BRD_AI_CreateAllConstraints。
 """
+
+
+def _safe_identifier(value):
+    """Legacy template uses names in strings and comments: reject unsafe input."""
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_.$+/:@\[\]-]+", value):
+        raise ValueError("旧 SKILL 生成器不支持该名称；禁止引号、空白和控制字符，请人工核对")
+    return value
+
+
+def _validated_constraints(constraints):
+    safe = deepcopy(constraints)
+    fields = {"physical_constraints": ("width_min", "width_max", "width_preferred"),
+              "spacing_constraints": ("line_to_line", "line_to_pin", "line_to_via"),
+              "via_constraints": ("drill", "pad"),
+              "electrical_constraints": ("impedance_target", "min_line_width", "min_gap", "impedance_tolerance")}
+    for category, names in fields.items():
+        for row in safe.get(category, []):
+            if category == "electrical_constraints" and not row.get("is_diff_pair"):
+                continue
+            row["name"] = _safe_identifier(row.get("name"))
+            row["net_class"] = _safe_identifier(row.get("net_class"))
+            for name in names:
+                value = row.get(name)
+                if isinstance(value, bool):
+                    raise ValueError(f"{category}.{name} 不能是布尔值")
+                try:
+                    num = float(value)
+                except (TypeError, ValueError):
+                    raise ValueError(f"{category}.{name} 必须是非负有限数值") from None
+                if not math.isfinite(num) or num < 0:
+                    raise ValueError(f"{category}.{name} 必须是非负有限数值")
+                row[name] = format(num, ".12g")
+    return safe
 
 
 def generate_skill_script(
@@ -133,13 +168,14 @@ def generate_skill_script(
     from datetime import datetime
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    constraints = _validated_constraints(constraints)
     net_classes = signal_classification.get("net_classes", {})
     net_class_list = []
     for cls_name, cls_info in net_classes.items():
         net_class_list.append({
-            "name": cls_name,
-            "nets": cls_info.get("nets", []),
-            "count": cls_info.get("count", len(cls_info.get("nets", []))),
+            "name": _safe_identifier(cls_name),
+            "nets": [_safe_identifier(net) for net in cls_info.get("nets", [])],
+            "count": len(cls_info.get("nets", [])),
         })
 
     diff_pairs = signal_classification.get("diff_pairs", [])
@@ -147,15 +183,15 @@ def generate_skill_script(
     for i, dp in enumerate(diff_pairs):
         diff_pair_list.append({
             "name": f"DP_{i+1}",
-            "p_net": dp.get("p_net", ""),
-            "n_net": dp.get("n_net", ""),
+            "p_net": _safe_identifier(dp.get("p_net", "")),
+            "n_net": _safe_identifier(dp.get("n_net", "")),
         })
 
     template = Template(SKILL_TEMPLATE)
     skill_content = template.render(
         timestamp=timestamp,
-        board_name=board_name,
-        capability_level=capability_level,
+        board_name="".join(c if c.isprintable() else " " for c in str(board_name)),
+        capability_level="".join(c if c.isprintable() else " " for c in str(capability_level)),
         net_classes=net_class_list,
         physical_constraints=constraints.get("physical_constraints", []),
         spacing_constraints=constraints.get("spacing_constraints", []),
@@ -165,7 +201,7 @@ def generate_skill_script(
     )
 
     if output_path:
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(skill_content)
 

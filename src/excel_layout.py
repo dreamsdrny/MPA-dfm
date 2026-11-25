@@ -5,6 +5,7 @@ import unicodedata
 from openpyxl.styles import Alignment
 from openpyxl.worksheet.page import PageMargins
 from openpyxl.utils import get_column_letter
+from copy import copy
 
 
 def display_width(text):
@@ -18,6 +19,11 @@ def wrapped_lines(text, width):
 def format_workbook(wb):
     for ws in wb:
         columns = ws.max_column
+        header=1
+        for row in ws.iter_rows(min_row=1,max_row=min(8,ws.max_row)):
+            labels={str(c.value) for c in row if c.value is not None}
+            if {"序号","规则名称"}<=labels or {"序号","问题点(code)"}<=labels or {"字段","来源","置信度"}<=labels:
+                header=row[0].row
         for col in range(1,columns+1):
             letter=get_column_letter(col)
             # Keep compact numerics; devote space to long descriptions/source paths.
@@ -53,11 +59,15 @@ def format_workbook(wb):
                 parts.append(chunks)
             count=max(map(len,parts),default=1)
             if count>1:
+                styles=[copy(ws.cell(row,col)._style) for col in range(1,columns+1)]
                 ws.insert_rows(row+1,count-1)
+                if row<header:header+=count-1
                 for offset in range(count):
                     for col,chunks in enumerate(parts,1):
                         value=chunks[offset] if offset<len(chunks) else None
-                        cell=ws.cell(row+offset,col,value)
+                        cell=ws.cell(row+offset,col)
+                        cell.value=value
+                        cell._style=copy(styles[col-1])
                         if isinstance(value,str):cell.data_type="s"
         for row in ws:
             lines=1
@@ -67,12 +77,11 @@ def format_workbook(wb):
                     lines=max(lines,wrapped_lines(cell.value,ws.column_dimensions[cell.column_letter].width))
                 if isinstance(cell.value,str):cell.data_type="s"
             ws.row_dimensions[row[0].row].height=min(395,max(24,lines*15+8))
-        header=4 if ws.title.endswith("Issue summary") else 1
         ws.freeze_panes=f"A{header+1}"
         ws.print_title_rows=f"1:{header}"
         ws.print_area=f"A1:{get_column_letter(columns)}{ws.max_row}"
         ws.sheet_properties.pageSetUpPr.fitToPage=True
-        ws.page_setup.orientation="landscape" if columns>4 else "portrait"
+        ws.page_setup.orientation="landscape" if columns>4 and not ws.title.endswith("Main") else "portrait"
         ws.page_setup.paperSize=ws.PAPERSIZE_A3 if columns>10 else ws.PAPERSIZE_A4
         ws.page_setup.fitToWidth=1
         ws.page_setup.fitToHeight=0
@@ -80,4 +89,23 @@ def format_workbook(wb):
         ws.page_margins=PageMargins(left=.25,right=.25,top=.4,bottom=.4,header=.15,footer=.15)
         ws.print_options.horizontalCentered=True
         ws.oddFooter.center.text="Page &P / &N"
+    # Continuation rows shift Issue detail rows; summary hyperlinks must point
+    # to the actual detail sheet containing the corresponding rule code.
+    issue_sheets={}
+    for ws in wb:
+        if "Issue" in ws.title and "summary" not in ws.title.lower():
+            for row in ws:
+                for cell in row:
+                    if isinstance(cell.value,str):
+                        import re
+                        match=re.search(r"\[([^\]]+)\]",cell.value)
+                        if match:issue_sheets[match[1]]=ws.title
+    for ws in wb:
+        if ws.title.endswith("Issue summary"):
+            import re
+            for row in ws:
+                for cell in row:
+                    if cell.hyperlink and isinstance(cell.value,str):
+                        match=re.search(r"\[([^\]]+)\]",cell.value)
+                        if match and match[1] in issue_sheets:cell.hyperlink=f"#'{issue_sheets[match[1]]}'!A1"
     return wb

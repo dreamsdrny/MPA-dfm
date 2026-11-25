@@ -8,11 +8,14 @@
 线程纪律: 检查在工作线程里跑, 所有 Tk 控件操作都通过 top.after 回主线程。
 """
 import os
-import threading
+import queue
 import tkinter as tk
 import traceback
 from tkinter import filedialog, messagebox, ttk
 
+from src.application.store import run_check, store_paths, summary_lines
+from src.application.reports import export_store_report
+from src.ui.tasks import TaskRunner
 from src.ui.theme import COLORS, Card, fonts
 
 _VERDICT_STYLE = {
@@ -34,13 +37,13 @@ class StoreCheckDialog:
 
     def __init__(self, master, brd_dir: str = "", bom_dir: str = "",
                  out_dir: str = "", log=None):
-        from src.design_inputs.store import store_paths
 
         self.master = master
         self.log = log
         self.bundle = None
         self._busy = False
         self._rows = []
+        self._logs = queue.Queue()
 
         paths = store_paths()
         self.brd_dir = tk.StringVar(value=brd_dir or paths["brd"])
@@ -62,6 +65,8 @@ class StoreCheckDialog:
         self.top.report_callback_exception = self._on_callback_error
 
         self._build()
+        self.tasks = TaskRunner(self.top)
+        self._log_poll_id = self.top.after(80, self._poll_logs)
         self.top.protocol("WM_DELETE_WINDOW", self.close)
 
     # ------------------------------------------------------------------ 界面
@@ -250,10 +255,16 @@ class StoreCheckDialog:
                 pass
 
     def _post_log(self, text, tag=None):
-        try:
-            self.top.after(0, lambda: self._append_log(text, tag))
-        except (RuntimeError, tk.TclError):
-            pass
+        self._logs.put((text, tag))
+
+    def _poll_logs(self):
+        for _ in range(100):
+            try:
+                text, tag = self._logs.get_nowait()
+            except queue.Empty:
+                break
+            self._append_log(text, tag)
+        self._log_poll_id = self.top.after(80, self._poll_logs)
 
     def _post(self, func, *args):
         """把回调排到主线程; 窗口已关闭时静默丢弃。"""
@@ -266,6 +277,7 @@ class StoreCheckDialog:
     def _set_busy(self, busy: bool):
         self._busy = busy
         self.run_btn.config(state=tk.DISABLED if busy else tk.NORMAL)
+        self.report_btn.config(state=tk.NORMAL if self.bundle and not busy else tk.DISABLED)
         if busy:
             self.progress.pack(side=tk.RIGHT, padx=(0, 12))
             self.progress.start(12)
@@ -287,26 +299,21 @@ class StoreCheckDialog:
         if not self.out_dir.get().strip():
             self.out_dir.set(os.path.join(os.path.dirname(brd_dir), "output"))
         self._set_busy(True)
+        self.bundle = None
+        self.report_btn.config(state=tk.DISABLED)
         self.status_var.set("正在扫描资料库…")
-        threading.Thread(target=self._execute, args=(brd_dir, bom_dir),
-                         daemon=True).start()
-
-    def _execute(self, brd_dir, bom_dir):
-        from src.design_inputs.store import run_check, summary_lines
-
-        try:
-            bundle = run_check(brd_dir=brd_dir, bom_dir=bom_dir, log=self._post_log)
+        def done(bundle):
+            if (brd_dir, bom_dir) != (self.brd_dir.get().strip(), self.bom_dir.get().strip()):
+                self._fail("目录已变化，已丢弃过期结果，请重新检查")
+                return
+            self._bundle_token = (brd_dir, bom_dir)
             for line in summary_lines(bundle):
-                self._post_log(line, "success" if bundle["verdict"] == "pass" else "warn")
-            self._post(self._apply_bundle, bundle)
-        except Exception as exc:  # noqa: BLE001
-            message = str(exc)
-            detail = traceback.format_exc()
-            self._post(self._append_log, f"[ERROR] {message}", "error")
-            self._post(self._append_log, detail, "error")
-            self._post(self._fail, message)
-        finally:
-            self._post(self._set_busy, False)
+                self._append_log(line, "success" if bundle["verdict"] == "pass" else "warn")
+            self._apply_bundle(bundle)
+        logs = self._logs
+        self.tasks.submit("store-check", lambda: run_check(brd_dir=brd_dir, bom_dir=bom_dir,
+                          log=lambda text, tag=None: logs.put((text, tag))), done, self._fail,
+                          lambda: self._set_busy(False))
 
     def _fail(self, message):
         self.status_var.set(f"检查失败: {message}")
@@ -314,6 +321,7 @@ class StoreCheckDialog:
     # ------------------------------------------------------------------ 回填
     def _apply_bundle(self, bundle):
         self.bundle = bundle
+        self._bundle_token = (self.brd_dir.get().strip(), self.bom_dir.get().strip())
         self.pair_tree.delete(*self.pair_tree.get_children())
         for index, pair in enumerate(bundle.get("pairs") or []):
             brd, bom = pair.get("brd") or {}, pair.get("bom") or {}
@@ -445,14 +453,16 @@ class StoreCheckDialog:
         if not self.bundle:
             messagebox.showinfo("提示", "先跑一次检查, 再导出报告")
             return
-        from src.store_report import write_report
-
         out_dir = self.out_dir.get().strip()
-        try:
-            files = write_report(self.bundle, out_dir)
-        except OSError as exc:
-            messagebox.showerror("导出失败", str(exc))
+        if self._bundle_token != (self.brd_dir.get().strip(), self.bom_dir.get().strip()):
+            self._fail("目录已变化，请重新检查")
             return
+        bundle = self.bundle
+        self._set_busy(True)
+        self.tasks.submit("store-report", lambda: export_store_report(bundle, out_dir), self._report_done,
+                          self._fail, lambda: self._set_busy(False))
+
+    def _report_done(self, files):
         self._append_log("[报告] " + " | ".join(files.values()), "success")
         messagebox.showinfo("导出完成",
                             "报告已写出:\n" + "\n".join(files.values()))
@@ -466,6 +476,8 @@ class StoreCheckDialog:
         if self._busy and not messagebox.askyesno("确认", "检查仍在进行, 确定关闭吗?"):
             return
         try:
+            self.tasks.close()
+            self.top.after_cancel(self._log_poll_id)
             self.top.destroy()
         except tk.TclError:
             pass

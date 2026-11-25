@@ -1,0 +1,18 @@
+{
+  "layer_count": 12,
+  "copper_um": 35,
+  "stackup": [
+    {"index": 1, "name": "TOP", "type": "signal", "copper_um": 35},
+    {"index": 2, "name": "L2_GND", "type": "plane", "copper_um": 18},
+    {"index": 3, "name": "L3_SIG", "type": "signal", "copper_um": 18},
+    {"index": 4, "name": "L4_PWR", "type": "plane", "copper_um": 35},
+    {"index": 5, "name": "L5_SIG", "type": "signal", "copper_um": 18},
+    {"index": 6, "name": "L6_GND", "type": "plane", "copper_um": 18},
+    {"index": 7, "name": "L7_GND", "type": "plane", "copper_um": 18},
+    {"index": 8, "name": "L8_SIG", "type": "signal", "copper_um": 18},
+    {"index": 9, "name": "L9_PWR", "type": "plane", "copper_um": 35},
+    {"index": 10, "name": "L10_SIG", "type": "signal", "copper_um": 18},
+    {"index": 11, "name": "L11_GND", "type": "plane", "copper_um": 18},
+    {"index": 12, "name": "BOTTOM", "type": "signal", "copper_um": 35}
+  ]
+}

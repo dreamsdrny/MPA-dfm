@@ -19,8 +19,8 @@ def extract_brd_info(brd_path: str) -> dict:
     }
 
     try:
-        with open(brd_path, "rb") as f:
-            raw = f.read()
+        from src.resource_limits import read_bounded
+        raw = read_bounded(brd_path)
     except Exception as e:
         info["nets"] = []
         info["error"] = f"Read error: {e}"

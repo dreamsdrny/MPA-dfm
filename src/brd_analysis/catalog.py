@@ -12,14 +12,14 @@ from src.brd_analysis.model import CATEGORY_ORDER, Capability
 
 # 类别模块: 每个模块导出 CATALOG = [Capability, ...]
 _MODULE_BY_CATEGORY = {
-    "drc": "src.brd_analysis.cat_drc",
-    "physical": "src.brd_analysis.cat_physical",
-    "electrical": "src.brd_analysis.cat_electrical",
-    "manufacturing": "src.brd_analysis.cat_manufacturing",
-    "reports": "src.brd_analysis.cat_reports",
-    "assembly": "src.brd_analysis.cat_assembly",
-    "mcad": "src.brd_analysis.cat_mcad",
-    "database": "src.brd_analysis.cat_database",
+    "drc": "src.domain.brd_drc",
+    "physical": "src.domain.brd_physical",
+    "electrical": "src.domain.brd_electrical",
+    "manufacturing": "src.adapters.brd_manufacturing",
+    "reports": "src.adapters.brd_capability_reports",
+    "assembly": "src.adapters.brd_assembly",
+    "mcad": "src.adapters.brd_mcad",
+    "database": "src.adapters.brd_database",
 }
 
 

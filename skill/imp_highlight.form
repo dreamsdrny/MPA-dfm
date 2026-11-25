@@ -1,0 +1,102 @@
+FILE_TYPE=FORM_DEFN VERSION=2
+FORM
+FIXED
+PORT 82 23
+HEADER "IMP_HIGHLIGHT - Current Allegro BRD"
+POPUP <layers> "" "".
+POPUP <modes> "Geometry only (NOT impedance)" "geometry", "Impedance constrained nets" "impedance", "Database differential pairs" "pair".
+POPUP <colors> "Default" 1.
+TILE
+TEXT "Target copper layer"
+TLOC 1 1
+ENDTEXT
+FIELD layer
+FLOC 34 1
+ENUMSET 43
+POP "layers"
+ENDFIELD
+TEXT "Recognition mode"
+TLOC 1 4
+ENDTEXT
+FIELD mode
+FLOC 34 4
+ENUMSET 43
+POP "modes"
+ENDFIELD
+TEXT "Actual width mil (blank = any)"
+TLOC 1 7
+ENDTEXT
+FIELD width
+FLOC 34 7
+STRFILLIN 15 40
+ENDFIELD
+TEXT "Actual spacing mil (blank = any)"
+TLOC 1 10
+ENDTEXT
+FIELD spacing
+FLOC 34 10
+STRFILLIN 15 40
+ENDFIELD
+TEXT "Equality tolerance mil"
+TLOC 1 13
+ENDTEXT
+FIELD tolerance
+FLOC 34 13
+STRFILLIN 15 40
+ENDFIELD
+TEXT "Exact Net (blank = all)"
+TLOC 1 16
+ENDTEXT
+FIELD net
+FLOC 34 16
+STRFILLIN 43 255
+ENDFIELD
+TEXT "Exact differential pair"
+TLOC 1 19
+ENDTEXT
+FIELD pair
+FLOC 34 19
+STRFILLIN 43 255
+ENDFIELD
+TEXT "Target constraint impedance ohm"
+TLOC 1 22
+ENDTEXT
+FIELD impedance
+FLOC 34 22
+STRFILLIN 15 40
+ENDFIELD
+TEXT "Allegro palette color"
+TLOC 1 25
+ENDTEXT
+FIELD color
+FLOC 34 25
+ENUMSET 43
+OPTIONS OWNERDRAWN
+POP "colors"
+ENDFIELD
+FIELD refresh
+FLOC 1 29
+MENUBUTTON "Refresh DB" 17 3
+ENDFIELD
+FIELD apply
+FLOC 21 29
+MENUBUTTON "Highlight" 17 3
+ENDFIELD
+FIELD clear
+FLOC 41 29
+MENUBUTTON "Clear" 15 3
+ENDFIELD
+FIELD close
+FLOC 61 29
+MENUBUTTON "Close" 15 3
+ENDFIELD
+FIELD status
+FLOC 1 37
+STRFILLIN 77 255
+ENDFIELD
+FIELD inspect
+FLOC 1 33
+MENUBUTTON "Pick Segment" 20 3
+ENDFIELD
+ENDTILE
+ENDFORM

@@ -17,13 +17,14 @@
     待填  灰色, BRD 也没有、用户也没填
 """
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, filedialog, messagebox
 
-from src.dfm_inputs import (BRD_COMPONENT_CAP, CATEGORY_HINTS, DFM_FIELDS,
+from src.application.pcb_inputs import (BRD_COMPONENT_CAP, CATEGORY_HINTS, DFM_FIELDS,
                             FIELD_META, brd_design_values, brd_extra_values,
                             surface_finish_choices)
 from src.ui.theme import COLORS
 from src.ui.widgets import combo_cell, entry_cell, scroll_area
+from src.ui.responsive import FlowBar
 
 # 来源标签的显示文本与颜色
 _ORIGIN_TAG = {
@@ -35,13 +36,17 @@ _ORIGIN_TAG = {
 
 
 class ParamPanel(ttk.Frame):
-    def __init__(self, master, on_browse, on_load, font_bold=None):
+    def __init__(self, master, on_browse, on_load, font_bold=None, unified=False):
         super().__init__(master, style="Card.TFrame")
         self._on_browse = on_browse
         self._on_load = on_load
+        self.via_process_unknown = []
         self._font_bold = font_bold or ("TkDefaultFont", 9, "bold")
         self._font_tag = ("TkDefaultFont", 8)
         self._mute = False          # 程序写值时抑制"用户编辑"判定
+        self._board_available = False
+        self.unified = unified
+        self.stackup_sources = []
 
         # ---- 表单变量 ----
         self.brd_path = tk.StringVar(value="")
@@ -49,7 +54,7 @@ class ParamPanel(ttk.Frame):
         self.factory = tk.StringVar(value="hongban")
         self.board_type = tk.StringVar(value="rigid")
         self.level = tk.StringVar(value="standard")
-        self.copper_oz = tk.StringVar(value="1.0")
+        self.copper_um = tk.StringVar(value="35")
         self.surface_finish = tk.StringVar(value="")
         self.polarity_var = tk.BooleanVar(value=True)
         self.panelized_var = tk.BooleanVar(value=True)
@@ -62,6 +67,8 @@ class ParamPanel(ttk.Frame):
         self.via_kind_unknown = []
         self.components = {}
         self.holes = {}
+        self.layers = []
+        self.stackup = []
         self.pad_metrics = {}
         self.silkscreen = {}
         self.silkscreen_to_outline = {}
@@ -73,26 +80,29 @@ class ParamPanel(ttk.Frame):
         self.level_combo = None
         self._build()
         self._refresh_counter()
+        self.set_board_available(False)
 
     # ------------------------------------------------------------ 构建
     def _build(self):
-        ttk.Label(self, text="BRD 文件", style="FieldLabel.TLabel").pack(anchor=tk.W)
-        line = ttk.Frame(self, style="Card.TFrame")
-        line.pack(fill=tk.X, pady=(3, 0))
-        ttk.Entry(line, textvariable=self.brd_path).pack(
-            side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(line, text="浏览", style="Secondary.TButton", width=5,
-                   command=self._on_browse).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(line, text="从 BRD 读取", style="Secondary.TButton", width=11,
-                   command=self._on_load).pack(side=tk.LEFT, padx=(6, 0))
-        # BRD 读取结果提示: 正常读入时不显示任何来源清单, 只留真问题(读失败/旧格式)
+        if not self.unified:
+            ttk.Label(self, text="BRD 文件", style="FieldLabel.TLabel").pack(anchor=tk.W)
+            line = FlowBar(self, style="Card.TFrame")
+            line.pack(fill=tk.X, pady=(3, 0))
+            line.add(ttk.Entry(line,textvariable=self.brd_path,width=18))
+            line.add(ttk.Button(line,text="浏览",style="Secondary.TButton",command=self._on_browse))
+            line.add(ttk.Button(line,text="从 BRD 读取",style="Secondary.TButton",command=self._on_load))
+        # 导入状态常驻顶部；成功导入后才展开设计参数，空白板不能分析。
         self.brd_status_label = ttk.Label(self, textvariable=self.brd_status_var,
                                           style="CardHint.TLabel",
                                           wraplength=340, justify=tk.LEFT)
         self.brd_status_label.pack(anchor=tk.W, pady=(6, 0))
         self._brd_status_packed = True
 
-        opts = ttk.Frame(self, style="Card.TFrame")
+        self.empty_hint = ttk.Label(self, style="CardHint.TLabel", wraplength=330, justify=tk.LEFT,
+            text="请在上方导入 BRD 或 Gerber 文件 / 目录 / 压缩包。\n"
+                 "两类资料共用能力设置和分析结果；Gerber 可以不依赖 BRD 单独分析。")
+        self.design_frame = ttk.Frame(self, style="Card.TFrame")
+        opts = ttk.Frame(self.design_frame, style="Card.TFrame")
         opts.pack(fill=tk.X, pady=(10, 0))
         for col in (0, 1):
             opts.columnconfigure(col, weight=1)
@@ -102,7 +112,7 @@ class ParamPanel(ttk.Frame):
                    self.sync_levels)
         self.level_combo = combo_cell(opts, 1, 0, "能力等级", self.level,
                                       ["standard", "automotive", "extreme"], None)
-        entry_cell(opts, 1, 1, "铜厚 (oz)", self.copper_oz)
+        entry_cell(opts, 1, 1, "外层成品铜厚 (um)", self.copper_um)
         self.surface_combo = combo_cell(opts, 2, 0, "表面处理", self.surface_finish,
                                         surface_finish_choices(), None)
         entry_cell(opts, 2, 1, "单板名", self.board_name)
@@ -118,11 +128,32 @@ class ParamPanel(ttk.Frame):
                        "没勾选会作为高等级问题写进结果").grid(
             row=4, column=0, columnspan=2, sticky="we", pady=(4, 0))
         self.sync_levels()
+        self.stackup_button = ttk.Button(opts, text="导入逐层叠构 JSON（铜厚/线宽/线距）",
+                                         command=self._import_stackup)
+        self.stackup_button.grid(
+            row=5, column=0, columnspan=2, sticky="we", pady=(6, 0))
+        ttk.Label(opts, style="CardHint.TLabel", wraplength=330,
+                  text="全部铜层按各层叠构铜厚检查；阻焊仅顶/底层。内层铜厚未给则待确认，不套用外层。"
+                   ).grid(row=6, column=0, columnspan=2, sticky="we")
+        self.stackup_var = tk.StringVar(value="逐层叠构待补充")
+        ttk.Label(opts, textvariable=self.stackup_var, style="CardHint.TLabel", wraplength=330).grid(
+            row=7, column=0, columnspan=2, sticky="we", pady=(6, 0))
+        table_host = ttk.Frame(opts, style="Card.TFrame")
+        table_host.grid(row=8, column=0, columnspan=2, sticky="we", pady=(4, 0))
+        self.stackup_tree = ttk.Treeview(table_host, columns=("layer", "copper", "scope"),
+                                        show="headings", height=5)
+        for key, label, width in (("layer", "铜层", 105), ("copper", "铜厚 μm", 75), ("scope", "检查范围", 135)):
+            self.stackup_tree.heading(key, text=label)
+            self.stackup_tree.column(key, width=width, minwidth=45)
+        self.stackup_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar = ttk.Scrollbar(table_host, orient=tk.VERTICAL, command=self.stackup_tree.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.stackup_tree.configure(yscrollcommand=scrollbar.set)
 
-        ttk.Separator(self, orient=tk.HORIZONTAL, style="Card.TSeparator").pack(
+        ttk.Separator(self.design_frame, orient=tk.HORIZONTAL, style="Card.TSeparator").pack(
             fill=tk.X, pady=(10, 4))
 
-        head = ttk.Frame(self, style="Card.TFrame")
+        head = ttk.Frame(self.design_frame, style="Card.TFrame")
         head.pack(fill=tk.X)
         ttk.Label(head, textvariable=self.count_var, style="CardHint.TLabel",
                   wraplength=300, justify=tk.LEFT).pack(side=tk.LEFT)
@@ -137,7 +168,7 @@ class ParamPanel(ttk.Frame):
         # 只有表单里存在预填值(示例)时才显示, 平时不占地方
         self._confirm_shown = False
 
-        _, inner = scroll_area(self)
+        _, inner = scroll_area(self.design_frame)
         self._host = ttk.Frame(inner, style="Card.TFrame")
         self._host.grid(row=0, column=0, sticky="nsew")
         inner.columnconfigure(0, weight=1)
@@ -149,8 +180,44 @@ class ParamPanel(ttk.Frame):
             self.origins[key] = "default" if default else "empty"
         self._render_fields()
 
+    def set_board_available(self, available):
+        self._board_available = bool(available)
+        self.stackup_button.configure(state=tk.NORMAL if available else tk.DISABLED)
+        if available or self.unified:
+            self.empty_hint.pack_forget()
+            if not self.design_frame.winfo_manager():
+                self.design_frame.pack(fill=tk.BOTH, expand=True)
+            self._refresh_stackup()
+        else:
+            self.design_frame.pack_forget()
+            if not self.empty_hint.winfo_manager():
+                self.empty_hint.pack(fill=tk.X, pady=(12, 0))
+
+    def _refresh_stackup(self):
+        from src.application.pcb_inputs import copper_layers
+        try:
+            rows = copper_layers(dict(stackup=self.stackup, layers=self.layers,
+                layer_count=self.entries["layer_count"].get().strip()), self.copper_um.get())
+        except (ValueError, TypeError):
+            self.stackup_var.set("逐层叠构/铜厚输入无效，请核对")
+            self.stackup_tree.delete(*self.stackup_tree.get_children())
+            self._stackup_preview_rows = None
+            return
+        missing = sum(row["copper_um"] is None for row in rows)
+        self.stackup_var.set(f"共 {len(rows)} 铜层 · 缺铜厚 {missing} 层 · 阻焊仅首尾外层"
+                            if rows else "尚无逐层叠构：请导入板厂确认的铜层与铜厚")
+        preview_rows = [(f"L{row['index']} {row['name']}",
+                "待补" if row["copper_um"] is None else f"{row['copper_um']:g}",
+                "线宽/线距 + 阻焊" if row["outer"] else "线宽/线距") for row in rows]
+        if preview_rows == getattr(self, "_stackup_preview_rows", None):
+            return
+        self._stackup_preview_rows = preview_rows
+        self.stackup_tree.delete(*self.stackup_tree.get_children())
+        for values in preview_rows:
+            self.stackup_tree.insert("", tk.END, values=values)
+
     def _set_brd_status(self, text: str) -> None:
-        """BRD 读取结果提示: 正常读入时**不显示**任何来源清单, 只留问题提示。"""
+        """导入引导/读取问题提示；就绪状态由工作台顶部常驻显示。"""
         self.brd_status_var.set(text or "")
         if text and not self._brd_status_packed:
             self.brd_status_label.pack(fill=tk.X, pady=(0, 4))
@@ -186,7 +253,7 @@ class ParamPanel(ttk.Frame):
                          fg=COLORS["primary_dark"],
                          font=self._font_bold, anchor=tk.W).pack(fill=tk.X, ipady=3)
                 row += 1
-            ttk.Label(self._host, text=label, style="Card.TLabel").grid(
+            ttk.Label(self._host, text=label, style="Card.TLabel",wraplength=210).grid(
                 row=row, column=0, sticky=tk.W, pady=1)
             ttk.Entry(self._host, textvariable=self.entries[key], width=9).grid(
                 row=row, column=1, sticky=tk.E, padx=(8, 4), pady=1)
@@ -302,7 +369,7 @@ class ParamPanel(ttk.Frame):
     # ------------------------------------------------------------ 行为
     def sync_levels(self):
         """板厂/板型变化时, 能力等级下拉只保留该组合支持的值。"""
-        from src.dfm_engine import list_levels
+        from src.application.pcb_inputs import list_levels
 
         levels = list_levels(self.board_type.get(), factory=self.factory.get()) or ["standard"]
         if self.level_combo is not None:
@@ -338,10 +405,10 @@ class ParamPanel(ttk.Frame):
             design["panel_size"] = [design.pop("panel_size_x"), design.pop("panel_size_y")]
 
         # 铜厚/表面处理/阈值类选项不来自 BRD, 但属于"看板选项", 一律带上
-        try:
-            design["copper_oz"] = float(self.copper_oz.get() or 1.0)
-        except ValueError:
-            design["copper_oz"] = 1.0
+        from src.application.pcb_inputs import normalize_copper_um
+        design["copper_um"] = normalize_copper_um(self.copper_um.get())
+        design["layers"] = list(self.layers)
+        design["stackup"] = [dict(row) for row in self.stackup]
         if self.surface_finish.get().strip():
             design["surface_finish"] = self.surface_finish.get().strip()
         design["polarity_marked"] = self.polarity_var.get()
@@ -368,24 +435,39 @@ class ParamPanel(ttk.Frame):
         design["_test_points"] = self.test_points
         design["_silk_to_component"] = self.silk_to_component
         design["_holes"] = self.holes
+        design["_via_process_unknown"] = getattr(self, "via_process_unknown", [])
         return design
 
     # ------------------------------------------------------------ BRD 带入
     def reset_design(self):
         """Do not carry measurements from the previous board into a new input."""
         self.sources.clear()
+        self.layers = []
+        self.stackup = []
+        self.stackup_sources = []
+        self.via_kind_unknown = []
+        self.via_process_unknown = []
+        for key in ("components", "holes", "pad_metrics", "silkscreen", "silkscreen_to_outline",
+                    "pads", "test_points", "silk_to_component"):
+            setattr(self, key, {})
         for _cat, key, _label, _default in DFM_FIELDS:
             self._set(key, "")
             self.origins[key] = "empty"
         self.board_name.set("")
         self.surface_finish.set("")
-        # apply_brd() will render once after the worker finishes loading.
+        self._render_fields()
+        self._refresh_counter()
+        self._refresh_stackup()
 
     def apply_brd(self, info: dict) -> None:
         """把 BRD 里真实存在的字段填进参数表; 填不了的明确说明原因。"""
+        self.via_process_unknown = list(info.get("via_process_unknown") or [])
         self.via_kind_unknown = list(info.get("via_kind_unknown") or [])
         self.components = info.get("components") or {}
         self.holes = info.get("holes") or {}
+        self.layers = list(info.get("layers") or [])
+        stack = info.get("stackup") or []
+        self.stackup = stack.get("layers", []) if isinstance(stack, dict) else stack
         self.pad_metrics = info.get("pad_metrics") or {}
         self.silkscreen = info.get("silkscreen") or {}
         self.silkscreen_to_outline = info.get("silkscreen_to_outline") or {}
@@ -438,3 +520,28 @@ class ParamPanel(ttk.Frame):
             self._set_brd_status("旧格式 BRD: 只能读网络/层等基本信息")
         else:
             self._set_brd_status("")
+
+    def _import_stackup(self):
+        if not self._board_available:
+            messagebox.showwarning("BRD 未就绪", "请先成功导入 BRD，再补充逐层叠构", parent=self)
+            return
+        path = filedialog.askopenfilename(parent=self, title="导入逐铜层叠构",
+                                          filetypes=[("叠构 JSON", "*.json")])
+        if not path:
+            return
+        try:
+            from src.application.pcb_inputs import import_stackup
+            current_count = self.entries["layer_count"].get().strip()
+            imported = import_stackup(path, current_count, self.copper_um.get())
+            # 缺失外层铜厚仍让 read_design() 使用当前手工值，而非固化导入时的值。
+            self.stackup = imported["rows"]
+            self.stackup_sources = imported["input_fingerprints"]
+            self._set("layer_count", imported["count"])
+            self.set_origin("layer_count", "manual")
+            self._refresh_counter()
+            # 触发对话框现有输入变化监听，丢弃旧报告。
+            self.copper_um.set(self.copper_um.get())
+            self._refresh_stackup()
+            self._set_brd_status(f"已导入 {imported['count']} 铜层叠构；缺铜厚/实测值的层将标待确认")
+        except (ValueError, TypeError, OSError) as exc:
+            messagebox.showwarning("叠构导入失败", str(exc), parent=self)

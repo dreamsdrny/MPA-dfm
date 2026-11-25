@@ -95,12 +95,15 @@ class SMTContractTests(unittest.TestCase):
             wb.close()
         self.assertTrue(output.with_suffix(".json").is_file())
 
-    def test_repository_template_loads_without_pass(self):
-        path = Path(__file__).resolve().parents[1] / "config" / "smt_capability_template.yaml"
+    def test_repository_lijing_loads_without_pass(self):
+        path = (Path(__file__).resolve().parents[1] / "config" / "suppliers"
+                / "smt" / "smt_capability_lijing.yaml")
+        if not path.is_file():
+            self.skipTest("本地供应商能力配置缺失: config/suppliers/smt/smt_capability_lijing.yaml")
         doc = load_smt_profile(path)
-        result = analyze_smt(doc, "standard", {})
+        result = analyze_smt(doc, "automotive", {})
         self.assertEqual(result["counts"]["pass"], 0)
-        self.assertEqual(result["counts"]["unconfigured"], len(result["items"]))
+        self.assertEqual(result["counts"]["missing"], len(result["items"]))
 
 
 if __name__ == "__main__":

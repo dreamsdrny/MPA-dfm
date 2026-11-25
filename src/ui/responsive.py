@@ -11,25 +11,42 @@ class FlowBar(ttk.Frame):
         super().__init__(master, **kwargs)
         self.bind("<Configure>", self._layout)
         self._job = None
+        self._signature=None
+        self.bind("<Destroy>",self._destroyed,add="+")
 
     def add(self, widget):
         widget.grid(row=0, column=len(self.winfo_children())-1, sticky="w", padx=4, pady=3)
-        self.after_idle(self._layout)
+        if self._job is None:self._job=self.after_idle(self._layout)
         return widget
 
     def _layout(self, _event=None):
+        self._job=None
         if not self.winfo_exists():
             return
         available = max(self.winfo_width()-20, 200)
+        signature=(available,tuple((c.winfo_reqwidth(), getattr(c, "_flow_hidden", False)) for c in self.winfo_children()))
+        if signature==self._signature:return
+        self._signature=signature
+        for column_id in range(len(self.winfo_children())):
+            self.columnconfigure(column_id,minsize=0,weight=0)
         row = column = used = 0
         for child in self.winfo_children():
+            if getattr(child, "_flow_hidden", False):
+                child.grid_remove()
+                continue
             width = child.winfo_reqwidth()+10
             if used and used+width > available:
                 row += 1
                 column = used = 0
-            child.grid(row=row, column=column, sticky="w", padx=4, pady=3)
+            existing=child.grid_info()
+            if existing.get("row")!=row or existing.get("column")!=column:
+                child.grid(row=row, column=column, sticky="w", padx=4, pady=3)
             used += width
             column += 1
+
+    def _destroyed(self,event):
+        if event.widget is self and self._job:
+            self.after_cancel(self._job);self._job=None
 
 
 def scroll_workbench(master):
@@ -49,9 +66,11 @@ def scroll_workbench(master):
 
     def resized(event=None):
         # Small screens retain a scrollable logical workspace instead of hiding controls.
-        minimum = round(760 * float(master.tk.call("tk", "scaling")) / (96/72))
-        canvas.itemconfigure(window, width=max(canvas.winfo_width(), minimum),
-                             height=max(canvas.winfo_height(), content.winfo_reqheight()))
+        minimum = 760
+        width=max(canvas.winfo_width(),minimum)
+        height=max(canvas.winfo_height(),content.winfo_reqheight())
+        if int(float(canvas.itemcget(window,"width")))!=width or int(float(canvas.itemcget(window,"height")))!=height:
+            canvas.itemconfigure(window,width=width,height=height)
         canvas.configure(scrollregion=canvas.bbox("all"))
     content.bind("<Configure>", resized)
     canvas.bind("<Configure>", resized)
@@ -63,5 +82,6 @@ def scroll_workbench(master):
 
 def wrap_label(label, container, margin=20):
     def resized(event):
-        label.configure(wraplength=max(120, event.width-margin))
+        width=max(120,event.width-margin)
+        if int(label.cget("wraplength") or 0)!=width:label.configure(wraplength=width)
     container.bind("<Configure>", resized, add="+")

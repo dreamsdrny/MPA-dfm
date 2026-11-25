@@ -11,6 +11,7 @@
 import os
 import shutil
 import sys
+import tempfile
 import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -19,7 +20,7 @@ from src.component_stats import (export_component_excel, find_components,
                                  load_component_inventory)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FIX = os.path.join(ROOT, "tmp_compfixture")
+FIX = ""  # Allocated per run; never delete an existing workspace directory.
 
 PASS = FAIL = 0
 
@@ -35,16 +36,14 @@ def check(cond, label, detail=""):
 
 
 def make_fixture():
-    if os.path.isdir(FIX):
-        shutil.rmtree(FIX)
-    os.makedirs(FIX)
     part_refs = ["R1", "R2", "RN1", "C1", "C2", "L1", "D1", "Q1", "U1", "IC1",
                  "LED1", "J1", "SW1", "F1", "X1", "Y1", "T1", "B1", "BT1",
                  "ZZ1", "TP1", "R1"]
-    part = ('<?xml version="1.0"?><Part>'
-            + "".join(f'<o N="{r}"/>' for r in part_refs) + "</Part>")
+    part = ('<?xml version="1.0"?><root>'
+            + "".join(f'<o N="{r}"/>' for r in part_refs) + "</root>")
     with zipfile.ZipFile(os.path.join(FIX, "COMP.brd"), "w") as z:
-        z.writestr("Header.xml", '<?xml version="1.0"?><header version="17.4"/>')
+        z.writestr("Header.xml", '<?xml version="1.0"?><root version="17.4"/>')
+        z.writestr("objects/Design.xml", '<?xml version="1.0"?><root><o N="COMP"/></root>')
         z.writestr("objects/Part.xml", part)
 
     comps = [
@@ -77,19 +76,21 @@ def make_fixture():
     nodir = os.path.join(FIX, "no_part")
     os.makedirs(nodir)
     with zipfile.ZipFile(os.path.join(nodir, "NO_PART.brd"), "w") as z:
-        z.writestr("Header.xml", '<?xml version="1.0"?><header version="17.4"/>')
+        z.writestr("Header.xml", '<?xml version="1.0"?><root version="17.4"/>')
+        z.writestr("objects/Design.xml", '<?xml version="1.0"?><root><o N="NO_PART"/></root>')
     shutil.copy(os.path.join(FIX, "evan_components.csv"),
                 os.path.join(nodir, "evan_components.csv"))
 
     emptydir = os.path.join(FIX, "empty")
     os.makedirs(emptydir)
     with zipfile.ZipFile(os.path.join(emptydir, "EMPTY.brd"), "w") as z:
-        z.writestr("Header.xml", '<?xml version="1.0"?><header version="17.4"/>')
+        z.writestr("Header.xml", '<?xml version="1.0"?><root version="17.4"/>')
+        z.writestr("objects/Design.xml", '<?xml version="1.0"?><root><o N="EMPTY"/></root>')
     return os.path.join(FIX, "COMP.brd"), os.path.join(nodir, "NO_PART.brd"), \
         os.path.join(emptydir, "EMPTY.brd")
 
 
-def main():
+def _run():
     brd, nobrd, emptybrd = make_fixture()
     print("== 1. Part.xml + 导出文件 ==")
     inv = load_component_inventory(brd)
@@ -150,13 +151,21 @@ def main():
         check(wb.sheetnames == ["汇总", "分类", "明细"], "三个页签", wb.sheetnames)
         ws = wb["明细"]
         check(ws.max_row == 22 and ws.max_column == 12,
-              "明细 21 行 + 表头 / 12 列", (ws.max_row, ws.max_column))
+               "明细 21 行 + 表头 / 12 列", (ws.max_row, ws.max_column))
+        wb.close()
     except Exception as exc:  # noqa: BLE001
         check(False, "xlsx 能读回", exc)
 
     print()
     print(f"  器件统计自检: 通过 {PASS} / {PASS + FAIL}")
     return 0 if FAIL == 0 else 1
+
+
+def main():
+    global FIX
+    with tempfile.TemporaryDirectory(prefix="dfm-component-selftest-") as temp:
+        FIX = temp
+        return _run()
 
 
 if __name__ == "__main__":

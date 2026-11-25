@@ -49,7 +49,9 @@ def main():
     preview = Image.new("RGB", (400, 120), "#eeeeee")
     for x, size in zip((12, 50, 95, 150, 220), (16, 24, 32, 48, 64)):
         preview.paste(draw_icon(size), (x, 28), draw_icon(size))
-    preview.save(ROOT / "docs" / "evan_icon_sizes.png")
+    preview_dir = ROOT / "build" / "icon-preview"
+    preview_dir.mkdir(parents=True, exist_ok=True)
+    preview.save(preview_dir / "evan_icon_sizes.png")
     draw_icon(256).save(ROOT / "evan_taskbar.png")
     print("Generated native ICO sizes:", SIZES)
 

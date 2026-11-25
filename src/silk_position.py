@@ -80,6 +80,8 @@ procedure(evan_geometry_all(dir)
          "BOARD GEOMETRY/SILKSCREEN_TOP" "BOARD GEOMETRY/SILKSCREEN_BOTTOM") "SILK")
   evan_geometry_file(dir "evan_outline.csv"
     list("BOARD GEOMETRY/OUTLINE" "BOARD GEOMETRY/DESIGN_OUTLINE") "OUTLINE")
+  evan_geometry_file(dir "evan_component_bounds.csv"
+    list("PACKAGE GEOMETRY/PLACE_BOUND_TOP" "PACKAGE GEOMETRY/PLACE_BOUND_BOTTOM") "COMPONENT_BOUND")
   t)
 '''
 

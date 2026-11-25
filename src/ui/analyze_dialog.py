@@ -8,11 +8,15 @@
 线程纪律: 分析在工作线程里跑, 所有 Tk 控件操作都通过 root.after 回主线程。
 """
 import os
-import threading
+import queue
 import tkinter as tk
 import traceback
 from tkinter import filedialog, messagebox, ttk
 
+from src.application.brd_analysis import (BRDAnalysisRequest, capability_rows,
+                                          catalog_errors, run_brd_analysis)
+from src.application.reports import export_brd_report
+from src.ui.tasks import TaskRunner
 from src.ui.theme import COLORS, Card, fonts
 
 # 状态 -> (显示文字, 颜色) ; 与 model.STATUS_LABELS 保持一致
@@ -40,6 +44,7 @@ class AnalyzeDialog:
         self._report_files = {}
         self._busy = False
         self._selected = set()          # 勾选的能力 id; 空集合 = 全跑
+        self._logs = queue.Queue()
 
         from src.ui.theme import enable_dpi_awareness
 
@@ -55,6 +60,8 @@ class AnalyzeDialog:
 
         self._build()
         self._load_catalog(export_files)
+        self.tasks = TaskRunner(self.top)
+        self._log_poll_id = self.top.after(80, self._poll_logs)
         self.top.protocol("WM_DELETE_WINDOW", self.close)
 
     # ------------------------------------------------------------------ 界面
@@ -196,9 +203,6 @@ class AnalyzeDialog:
 
     # ------------------------------------------------------------------ 数据
     def _load_catalog(self, export_files=None):
-        from src.brd_analysis import capability_rows
-        from src.brd_analysis.catalog import CATALOG
-
         self.rows = capability_rows()
         by_category = {}
         for row in self.rows:
@@ -210,7 +214,7 @@ class AnalyzeDialog:
                     "", tk.END, iid=row["id"], text="☑",
                     values=(label, row["name_cn"], "待运行", row["desc"]),
                     tags=("pending",))
-        self.catalog_errors = list(CATALOG.errors)
+        self.catalog_errors = catalog_errors()
         if self.catalog_errors:
             self.status_var.set("部分类别模块未加载: " + "; ".join(self.catalog_errors))
         for path in (export_files or []):
@@ -297,6 +301,19 @@ class AnalyzeDialog:
             except Exception:  # noqa: BLE001
                 pass
 
+    def _poll_logs(self):
+        for _ in range(100):
+            try:
+                text, tag = self._logs.get_nowait()
+            except queue.Empty:
+                break
+            self._append_log(text, tag)
+        self._log_poll_id = self.top.after(80, self._poll_logs)
+
+    def _input_snapshot(self):
+        return (self.brd_path.get().strip(), tuple(self.export_list.get(0, tk.END)),
+                tuple(sorted(self._selected)))
+
     # ------------------------------------------------------------------ 动作
     def _browse_brd(self):
         path = filedialog.askopenfilename(
@@ -323,6 +340,7 @@ class AnalyzeDialog:
     def _set_busy(self, busy: bool):
         self._busy = busy
         self.run_btn.config(state=tk.DISABLED if busy else tk.NORMAL)
+        self.report_btn.config(state=tk.NORMAL if self.bundle and not busy else tk.DISABLED)
         if busy:
             self.progress.pack(side=tk.RIGHT, padx=(0, 12))
             self.progress.start(12)
@@ -342,30 +360,26 @@ class AnalyzeDialog:
         only = [r["id"] for r in self.rows if r["id"] in self._selected]
         if len(only) == len(self.rows):
             only = None                     # 全选 = 不传过滤条件
+        token = self._input_snapshot()
+        request = BRDAnalysisRequest(brd, out_dir, tuple(exports), tuple(only) if only is not None else None)
+        self.bundle = None
+        self.report_btn.config(state=tk.DISABLED)
         self._set_busy(True)
         self.status_var.set("正在分析…")
         for row in self.rows:
             self.tree.item(row["id"], values=(
                 self.tree.set(row["id"], "category"), row["name_cn"],
                 "运行中", row["desc"]), tags=("pending",))
-        threading.Thread(target=self._execute, args=(brd, out_dir, exports, only),
-                         daemon=True).start()
-
-    def _execute(self, brd, out_dir, exports, only):
-        from src.brd_analysis import analyze
-
-        try:
-            bundle = analyze(
-                brd, out_dir=out_dir, export_files=exports, only=only,
-                log=lambda text, tag=None: self.top.after(
-                    0, lambda: self._append_log(text, tag)))
-            self.top.after(0, lambda: self._apply_bundle(bundle))
-        except Exception as exc:  # noqa: BLE001
-            message = str(exc)
-            detail = traceback.format_exc()
-            self.top.after(0, lambda: self._append_log(f"[ERROR] {message}", "error"))
-            self.top.after(0, lambda: self._append_log(detail, "error"))
-            self.top.after(0, lambda: self._fail(message))
+        def done(bundle):
+            if token != self._input_snapshot():
+                self._fail("输入已变化，已丢弃过期结果，请重新分析")
+                return
+            self._bundle_token = token
+            self._apply_bundle(bundle)
+        logs = self._logs
+        self.tasks.submit("brd", lambda: run_brd_analysis(
+            request, log=lambda text, tag=None: logs.put((text, tag))), done, self._fail,
+            lambda: self._set_busy(False))
 
     def _apply_bundle(self, bundle):
         self.bundle = bundle
@@ -392,11 +406,18 @@ class AnalyzeDialog:
     def _export(self):
         if not self.bundle:
             return
-        from src.brd_analysis import write_reports
+        if self._bundle_token != self._input_snapshot():
+            self._fail("输入已变化，请重新分析后导出")
+            return
 
         out_dir = self.out_dir.get().strip()
         board = (self.bundle.get("board") or {}).get("board_name") or "board"
-        files = write_reports(self.bundle, out_dir, base_name=f"BRD分析报告_{board}")
+        bundle = self.bundle
+        self._set_busy(True)
+        self.tasks.submit("report", lambda: export_brd_report(bundle, out_dir, f"BRD分析报告_{board}"),
+                          self._report_done, self._fail, lambda: self._set_busy(False))
+
+    def _report_done(self, files):
         self._report_files = files
         lines = [f"{k.upper()}: {v}" for k, v in files.items()
                  if k != "csv_files" and v]
@@ -421,6 +442,8 @@ class AnalyzeDialog:
         if self._busy and not messagebox.askyesno("确认", "分析仍在进行, 确定关闭吗?"):
             return
         try:
+            self.tasks.close()
+            self.top.after_cancel(self._log_poll_id)
             self.top.destroy()
         except tk.TclError:
             pass

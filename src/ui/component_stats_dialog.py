@@ -10,11 +10,11 @@
 """
 import os
 import queue
-import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from src import component_stats
+from src.application import component_stats
+from src.ui.tasks import TaskRunner
 from src.ui.theme import COLORS, Card, apply_theme, fonts
 
 _MAX_ROWS = 4000
@@ -87,7 +87,8 @@ class ComponentStatsDialog:
                     ("total", "cats", "top", "bottom", "unknown", "coords", "pins")}
 
         self._build()
-        self._start_poll()
+        self.tasks = TaskRunner(self.win)
+        self._load_revision = 0
         if self.brd_path or self.files:
             self._start_load()
         else:
@@ -246,8 +247,13 @@ class ComponentStatsDialog:
         self.rows = []
         for var in self.kpi.values():
             var.set("—")
-        threading.Thread(target=self._load_worker,
-                         args=(self.brd_path, tuple(self.files)), daemon=True).start()
+        self._load_revision += 1
+        revision, brd, files = self._load_revision, self.brd_path, tuple(self.files)
+        def done(inv):
+            if revision == self._load_revision and brd == self.brd_path and files == tuple(self.files):
+                self._loaded(inv)
+        self.tasks.submit("component-import", lambda: component_stats.load_component_inventory(brd, files=files),
+                          done, self._failed)
 
     def _load_worker(self, brd_path, files):
         try:
@@ -442,7 +448,7 @@ class ComponentStatsDialog:
         self._start_load()
 
     def _gen_skill(self):
-        from src.allegro_skill import write_bundle
+        from src.application.cad_tools import write_bundle
 
         target = os.path.join(self.out_dir, "allegro_bridge")
         try:
@@ -488,17 +494,10 @@ class ComponentStatsDialog:
                        ("所有文件", "*.*")], parent=self.win)
         if not path:
             return
-        try:
-            if path.lower().endswith(".csv"):
-                out = component_stats.export_component_csv(inv, path)
-                sheets = ""
-            else:
-                out = component_stats.export_component_excel(inv, path)
-                sheets = "\n页签: 汇总 / 分类 / 明细"
-        except Exception as exc:  # noqa: BLE001
-            messagebox.showerror("导出失败", str(exc), parent=self.win)
-            return
-        messagebox.showinfo("导出完成", f"已导出:\n{out}{sheets}", parent=self.win)
+        export = component_stats.export_component_csv if path.lower().endswith(".csv") else component_stats.export_component_excel
+        self.tasks.submit("component-report", lambda: export(inv, path),
+                          lambda out: messagebox.showinfo("导出完成", f"已导出:\n{out}", parent=self.win),
+                          lambda error: messagebox.showerror("导出失败", error, parent=self.win))
 
     def _show_sources(self):
         inv = self.inv

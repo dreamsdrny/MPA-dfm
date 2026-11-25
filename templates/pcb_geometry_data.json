@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "brd_sha256": "使用界面的生成补充资料模板按钮绑定实际BRD哈希，不要直接使用本占位值",
+  "geometry_options": {
+    "drill_directory": "NC_Drill",
+    "drills": {
+      "pth.drl": {
+        "plated": true,
+        "process": "mechanical",
+        "start_layer": 1,
+        "end_layer": 2,
+        "alignment_confirmed": false,
+        "nets": {}
+      },
+      "npth.drl": {
+        "plated": false,
+        "process": "mechanical",
+        "start_layer": 1,
+        "end_layer": 2,
+        "alignment_confirmed": false,
+        "nets": {}
+      }
+    },
+    "limits": {
+      "npth_to_copper_mm": null,
+      "pad_to_mask_clearance_mm": null
+    },
+    "pad_geometry": {
+      "unit": "mm",
+      "coordinate_system": "gerber",
+      "alignment_confirmed": false,
+      "complete": false,
+      "pads": []
+    },
+    "copper_balance": {"cell_mm": 10, "max_delta_percent": null},
+    "scan_limits": {
+      "batch_size": 256,
+      "max_candidates": 2000000,
+      "max_findings": 10000,
+      "max_density_cells": 20000
+    }
+  }
+}

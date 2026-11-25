@@ -16,8 +16,8 @@ import tkinter as tk
 import traceback
 from tkinter import filedialog, messagebox, ttk
 
-from src import checklist_pipeline
-from src.checklist_template import read_template
+from src.application import checklist as checklist_pipeline
+from src.application.checklist import inspect_template as read_template
 from src.ui.main_panels import (build_footer, build_header, build_input_card,
                                build_log_card, build_option_card,
                                build_status_bar)
@@ -45,12 +45,8 @@ class MainWindow:
         apply_theme(self.root)
         apply_app_icon(self.root)
         # 每次启动重写界面日志, 便于用户只回传"这一次"的记录
-        self._ui_log_path = os.path.join(app_base_dir(), "Evan_BRD_ui.log")
-        try:
-            with open(self._ui_log_path, "w", encoding="utf-8") as f:
-                f.write("")
-        except OSError:
-            self._ui_log_path = None
+        from src.infrastructure.ui_log import initialize
+        self._ui_log_path = initialize(os.path.join(app_base_dir(), "Evan_BRD_ui.log"))
         # 窗口版没有控制台: 界面回调里的异常写到日志区 + crash.log
         self.root.report_callback_exception = self._on_callback_error
 
@@ -62,7 +58,6 @@ class MainWindow:
         self.board_type = tk.StringVar(value="rigid")
         self.capability_level = tk.StringVar(value="standard")
         self.copper_um = tk.StringVar(value="35")
-        self.copper_oz = tk.StringVar(value="1.0")
         self.net_list_var = tk.StringVar()
         self.autofill_var = tk.BooleanVar(value=True)
         self.checker_name = tk.StringVar(value="BRD-AI")
@@ -108,7 +103,7 @@ class MainWindow:
     def _set_busy(self, busy: bool):
         state = tk.DISABLED if busy else tk.NORMAL
         for btn in (self.run_btn, self.demo_btn, self.open_btn, self.analyze_btn,
-                    self.store_btn):
+                    self.store_btn, self.manufacturing_btn, self.trace_filter_btn):
             btn.config(state=state)
         if busy:
             self.progress.pack(side=tk.RIGHT, padx=16, pady=7)
@@ -122,6 +117,12 @@ class MainWindow:
         if self.tasks.pending:
             messagebox.showinfo("正在生成报告", "请等待 Checklist 报告生成完成后再关闭。", parent=self.root)
             return
+        dialog = getattr(self, "_impedance_window", None)
+        if dialog is not None and dialog.winfo_exists():
+            dialog.destroy()
+        self._finish_close()
+
+    def _finish_close(self):
         self._remember()
         self.tasks.close()
         if self._log_poll_id is not None:
@@ -144,7 +145,6 @@ class MainWindow:
             "board_type": self.board_type.get(),
             "level": self.capability_level.get(),
             "copper_um": self.copper_um.get(),
-            "copper_oz": self.copper_oz.get(),
             "checker": self.checker_name.get(),
             "autofill": bool(self.autofill_var.get()),
         })
@@ -158,7 +158,7 @@ class MainWindow:
                          ("output", self.output_dir), ("net_list", self.net_list_var),
                          ("factory", self.factory), ("board_type", self.board_type),
                          ("level", self.capability_level), ("copper_um", self.copper_um),
-                         ("copper_oz", self.copper_oz), ("checker", self.checker_name)):
+                         ("checker", self.checker_name)):
             val = prefs.get(key)
             if isinstance(val, str) and val:
                 var.set(val)
@@ -176,13 +176,8 @@ class MainWindow:
 
     def _log_to_file(self, text, tag=None):
         """界面日志同时落盘: 打包版没有控制台, 用户回传这个文件就能复现问题。"""
-        if self._ui_log_path is None:
-            return
-        try:
-            with open(self._ui_log_path, "a", encoding="utf-8") as f:
-                f.write(f"[{tag or 'info'}] {text}\n")
-        except OSError:
-            pass
+        from src.infrastructure.ui_log import append
+        append(self._ui_log_path, text, tag)
 
     def _post_log(self, text, tag=None):
         """线程安全的日志: 后台线程调用, 投递回主线程执行。"""
@@ -237,7 +232,7 @@ class MainWindow:
             self.net_list_var.set(path)
 
     def _sync_level_combo(self):
-        from src.dfm_engine import list_levels, normalize_level
+        from src.application.pcb_inputs import list_levels, normalize_level
 
         levels = list_levels(self.board_type.get(), factory=self.factory.get()) or ["standard"]
         self.cap_combo.configure(values=levels)
@@ -283,6 +278,10 @@ class MainWindow:
             self._log(f"[ERROR] 打开联动检查失败: {exc}", "error")
             messagebox.showerror("提示", str(exc))
 
+    def _open_manufacturing(self):
+        from src.ui.manufacturing_dialog import open_manufacturing
+        open_manufacturing(self.root, self.output_dir.get().strip())
+
     # ------------------------------------------------------------ 主流程: 填写 Checklist
     def _run_demo(self):
         self._run_checklist(use_demo=True)
@@ -308,14 +307,25 @@ class MainWindow:
             "board_type": self.board_type.get(),
             "level": self.capability_level.get(),
             "copper_um": self.copper_um.get(),
-            "copper_oz": self.copper_oz.get(),
             "checker": self.checker_name.get().strip(),
         }
         self._set_busy(True)
         self.logview.clear()
         self.status_var.set("正在填写 Checklist…")
+        token = self._checklist_input_token()
+        def done(result):
+            if token != self._checklist_input_token():
+                self._last_result = None
+                self.status_var.set("输入已变化，已丢弃过期 Checklist 结果，请重新执行")
+                return
+            self._checklist_done(result)
         self.tasks.submit("checklist", lambda: self._execute_checklist(snapshot, use_demo),
-                          self._checklist_done, self._checklist_failed, self._finish_ui)
+                          done, self._checklist_failed, self._finish_ui)
+
+    def _checklist_input_token(self):
+        return tuple(var.get() for var in (self.brd_path, self.checklist_path, self.output_dir,
+                     self.net_list_var, self.factory, self.board_type, self.capability_level,
+                     self.copper_um, self.checker_name))
 
     def _execute_checklist(self, snapshot, use_demo):
         return checklist_pipeline.run(
@@ -327,7 +337,6 @@ class MainWindow:
                 board_type=snapshot["board_type"],
                 level=snapshot["level"],
                 copper_um=snapshot["copper_um"],
-                copper_oz=snapshot["copper_oz"],
                 checker=snapshot["checker"],
                 demo=use_demo,
                 log=self._post_log,
@@ -384,6 +393,18 @@ class MainWindow:
             self._log(f"    {line}")
         messagebox.showinfo("模板检查", "\n".join(lines))
 
+    def _open_trace_filter(self):
+        from src.ui.impedance_panel import ImpedancePanel
+        dialog = getattr(self, "_impedance_window", None)
+        if dialog is not None and dialog.winfo_exists():
+            dialog.lift()
+            return
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Allegro 原生阻抗 / 走线高亮")
+        dialog.geometry("1100x800")
+        ImpedancePanel(dialog).pack(fill=tk.BOTH, expand=True)
+        self._impedance_window = dialog
+
     def _on_callback_error(self, exc_type, exc, tb):
         text = "".join(traceback.format_exception(exc_type, exc, tb))
         try:
@@ -392,8 +413,8 @@ class MainWindow:
         except Exception:  # noqa: BLE001
             pass
         try:
-            from evan_brd import log_crash
-            log_crash("tk-callback", text)
+            from src.infrastructure.diagnostics import log_exception
+            log_exception("tk-callback", exc_type, exc, tb)
         except Exception:  # noqa: BLE001
             pass
 

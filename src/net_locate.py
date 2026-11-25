@@ -627,7 +627,8 @@ def export_net_csv(net: dict, path: str) -> str:
     if not net:
         raise ValueError("没有选中的网络")
     with open(path, "w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.writer(f)
+        from src.csv_safety import SafeCSVWriter
+        writer = SafeCSVWriter(f)
         bbox = net.get("bbox") or {}
         center = net.get("center") or {}
         writer.writerow(["网络", net.get("name", "")])

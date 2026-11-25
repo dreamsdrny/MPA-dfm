@@ -5,6 +5,7 @@ from pathlib import Path
 
 from .bom import read_bom
 from .gerber import parse_gerber
+from .gerber_package import parse_gerber_package
 from .manufacturing import parse_odb, parse_step
 from .reconcile import brd_component_records, reconcile_bom
 from .store import split_bom_rows
@@ -33,7 +34,8 @@ def _brd(path):
     from src.brd_design import extract_brd_design
     from src.design_geometry import load_design_snapshot
 
-    raw = Path(path).read_bytes()
+    from src.resource_limits import read_bounded
+    raw = read_bounded(path)
     design = extract_brd_design(str(path), raw=raw)
     if not design.get("ok"):
         raise ValueError(design.get("error", "BRD 解析失败"))
@@ -60,10 +62,16 @@ def _bom(path):
             "columns": info.get("columns") or {}, "unmapped": info.get("unmapped") or [],
             "bom_stats": info.get("stats") or {},
             "part_numbers": info.get("part_numbers") or [],
-            "warnings": list(info.get("warnings") or [])}
+             "warnings": list(info.get("warnings") or [])}
 
 
-for _kind, _adapter in (("gerber", parse_gerber), ("bom", _bom), ("dsn", _dsn),
+def _gerber(path):
+    p = Path(path)
+    return parse_gerber_package(path) if p.is_dir() or p.name.lower().endswith(
+        (".zip", ".tgz", ".tar.gz", ".tar")) else parse_gerber(path)
+
+
+for _kind, _adapter in (("gerber", _gerber), ("bom", _bom), ("dsn", _dsn),
                         ("odb", parse_odb), ("step", parse_step)):
     register_adapter(_kind, _adapter)
 
@@ -72,7 +80,8 @@ def _infer(path):
     p = Path(path)
     name = p.name.lower()
     if p.is_dir() or name.endswith((".tgz", ".tar.gz", ".tar", ".zip")):
-        return "odb"
+        from .coordination import infer_manufacturing_kind
+        return infer_manufacturing_kind(path)
     ext = p.suffix.lower()
     if ext in (".step", ".stp"):
         return "step"

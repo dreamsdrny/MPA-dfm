@@ -12,10 +12,12 @@ from src.net_locate import parse_traces_csv, list_geometry_files
 
 LOCATION_HEADERS = ["检查项", "字段", "状态", "定位状态", "实测值", "能力值", "测量单位",
                     "X(mm)", "Y(mm)", "X(BRD)", "Y(BRD)", "BRD坐标单位", "层",
-                    "网络", "位号", "焊盘栈", "坐标来源", "Allegro命令", "说明"]
+                    "网络", "位号", "焊盘栈", "坐标来源", "Allegro命令", "说明",
+                    "引脚", "另一位号", "另一引脚", "另一网络", "对象ID", "另一对象ID", "规则来源", "对象规则SHA256"]
 LOCATION_KEYS = ["item", "field", "status", "location_status", "measured", "capability", "unit",
                  "x_mm", "y_mm", "x_brd", "y_brd", "brd_unit", "layer", "net", "refdes",
-                 "padstack", "source", "command", "note"]
+                  "padstack", "source", "command", "note", "pin", "other_refdes", "other_pin", "other_net",
+                  "object_id", "other_object_id", "rule_source", "rule_sha256"]
 COMPONENT_HEADERS = ["位号", "X(mm)", "Y(mm)", "X(BRD)", "Y(BRD)", "BRD坐标单位", "面", "旋转", "坐标来源", "Allegro命令"]
 COMPONENT_KEYS = ["refdes", "x_mm", "y_mm", "x_brd", "y_brd", "brd_unit", "side", "rotation", "source", "command"]
 
@@ -94,11 +96,16 @@ def attach_locations(result, brd_path="", files=(), design_unit="", extra_dirs=(
             inventory["errors"].append(f"{path}: {parsed.get('error', '没有走线数据')}")
     located = {row["field"]: row for row in pick.locate_failures(result, inventory)}
     rows = []
-    from src.dfm_engine import load_capability
+    from src.dfm_engine import capability_fingerprint, load_capability
     from src.silk_position import load_position_checks
     directories = list(extra_dirs) if extra_dirs else search_dirs + ([os.path.dirname(os.path.abspath(brd_path))] if brd_path else [])
+    factory = result.get("factory", "hongban")
+    if result.get("rule_sha256") and capability_fingerprint(factory) != result["rule_sha256"]:
+        raise ValueError("参数与丝印位置检查的 PCB 能力 YAML 版本不一致，请重新分析")
     position_checks, position_meta = load_position_checks(directories, inventory,
         load_capability(result.get("board_type", "rigid"), result.get("capability_level", "standard"), result.get("factory", "hongban")))
+    if result.get("rule_sha256") and capability_fingerprint(factory) != result["rule_sha256"]:
+        raise ValueError("PCB 能力 YAML 在丝印位置检查期间发生变化，请重新分析")
     for position in position_checks:
         rows.append(_point(dict(position, brd_unit=unit or "未知"), position, unit))
     if position_checks:
@@ -114,7 +121,7 @@ def attach_locations(result, brd_path="", files=(), design_unit="", extra_dirs=(
             result.setdefault("items", []).append(dict(category="丝印", item=first["item"], field=first["field"],
                 design=min(p["measured"] for p in points), capability=first["capability"], unit="mm",
                 status="fail" if failed else "warn_limit", source="Allegro", message=description,
-                note=first["note"]))
+                source_detail=first.get("source", ""), note=first["note"]))
             result.setdefault("issues", []).append(make_issue(f"SILK-XY-{index:02d}", "丝印", first["item"],
                 "高" if failed else "中", description, measured=first["measured"], required=first["capability"],
                 unit="mm", layer=first.get("layer", ""), x=first["x_mm"], y=first["y_mm"],
@@ -123,15 +130,9 @@ def attach_locations(result, brd_path="", files=(), design_unit="", extra_dirs=(
         result["warning_count"] = sum(i.get("status") == "warn_limit" for i in result["items"])
         result["errors"] = [i.get("message", "") for i in result["items"] if i.get("status") == "fail"]
         result["warnings"] = [i.get("message", "") for i in result["items"] if i.get("status") == "warn_limit"]
-        if result["error_count"]:
-            result.update(passed=False, releasable=False, verdict="不通过（含对象级丝印位置检查）")
-            if result.get("risk"):
-                result["risk"]["verdict"] = result["verdict"]
-        elif any(p["status"] == "warn_limit" for p in position_checks):
-            result["releasable"] = False
-            result["verdict"] = "丝印位置候选需复核，不能直接放行"
-            if result.get("risk"):
-                result["risk"]["verdict"] = result["verdict"]
+        result["position_review_count"] = sum(p["status"] == "warn_limit" for p in position_checks)
+        from src.verdict import finalize_verdict
+        finalize_verdict(result)
         summary = result.setdefault("issue_summary", {})
         for severity in ("高", "中"):
             summary[severity] = sum(i.get("severity") == severity for i in result.get("issues", []))
@@ -154,9 +155,17 @@ def attach_locations(result, brd_path="", files=(), design_unit="", extra_dirs=(
                 base["measured"] = coordinate.get("ring_mm") if field.startswith("min_annular_ring") else coordinate.get("drill_mm")
                 rows.append(_point(base, coordinate, unit))
             continue
-        if field in ("min_line_width", "min_inner_line_width", "min_neck_width"):
+        if field in ("min_line_width", "min_inner_line_width", "min_neck_width", "layer_min_line_width"):
             cap = item.get("capability")
             candidates = traces
+            if field == "layer_min_line_width":
+                from src.dfm_stackup import layer_number
+                layer_name = str(item.get("layer", "")).upper()
+                layer_index = layer_number(layer_name, len(result.get("stackup") or []) or None)
+                candidates = [t for t in traces if
+                    str(t.get("layer", "")).upper().split("/")[-1] == layer_name or
+                    (layer_index is not None and layer_number(str(t.get("layer", "")).split("/")[-1],
+                        len(result.get("stackup") or []) or None) == layer_index)]
             if field == "min_inner_line_width":
                 candidates = [t for t in traces if str(t.get("layer", "")).upper().split("/")[-1]
                               not in ("TOP", "BOTTOM", "UNKNOWN", "")]

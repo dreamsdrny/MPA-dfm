@@ -61,11 +61,11 @@ _QUICKVIEW_RE = re.compile(
     rb"Units:\s*([A-Za-z]+)[^\x00]{0,200}?Accuracy:\s*(\d+)[^\x00]{0,200}?Layers:\s*(\d+)")
 # 匹配过孔命名格式：VIA<直径>D<钻孔>[A<公差>]，如 "VIA10D5A2"
 _VIA_RE = re.compile(
-    r"\bVIA(\d+(?:\.\d+)?)D(\d+(?:\.\d+)?)(?:A(\d+(?:\.\d+)?))?", re.I)
+    r"^(?:VIA|BBVIA|MICROVIA|THRU[ _-]?PIN)[_-]?(\d+(?:\.\d+)?)D(\d+(?:\.\d+)?)(?:A(\d+(?:\.\d+)?))?(?=$|[_-])", re.I)
 # 匹配任意过孔标记，如 "VIA10_20"、"VIA8MIL" 等
-_VIA_ANY_RE = re.compile(rb"\bVIA[0-9][0-9A-Za-z_.\-]{1,30}", re.I)
+_VIA_ANY_RE = re.compile(rb"\b(?:VIA|BBVIA|MICROVIA|THRU[ _-]?PIN)[_-]?[0-9][0-9A-Za-z_.\-]{1,30}", re.I)
 # 另一种常见命名: VIA10-20 / VIA8_14 -> 钻孔-焊盘 (单位 mil)
-_VIA_DASH_RE = re.compile(r"^VIA(\d+(?:\.\d+)?)[-_](\d+(?:\.\d+)?)$", re.I)
+_VIA_DASH_RE = re.compile(r"^(?:VIA|BBVIA|MICROVIA|THRU[ _-]?PIN)[_-]?(\d+(?:\.\d+)?)[-_](\d+(?:\.\d+)?)$", re.I)
 
 
 def _clean(text: str) -> str:
@@ -269,14 +269,15 @@ def parse_via_name(name: str) -> Optional[dict]:
     名字尾部带跨层标记时一并取出, 例如 VIA14D8_3-10 表示只连 L3~L10 的埋孔;
     这类焊盘栈不是通孔, 不能拿去和"机械通孔"的孔环能力比。
     """
-    m = _VIA_RE.search(name)
+    clean = re.sub(r"\.(?:pad|dra|psm)$", "", str(name or "").strip(), flags=re.I)
+    m = _VIA_RE.search(clean)
     if m:
         pad = float(m.group(1))
         drill = float(m.group(2))
         anti = float(m.group(3)) if m.group(3) else None
     else:
         # VIA10-20 这种"钻孔-焊盘"命名
-        m2 = _VIA_DASH_RE.match(name.strip())
+        m2 = _VIA_DASH_RE.match(clean)
         if not m2:
             return None
         drill = float(m2.group(1))
@@ -287,7 +288,7 @@ def parse_via_name(name: str) -> Optional[dict]:
     if pad <= 0 or drill <= 0 or pad <= drill:
         return None
     span = None
-    ms = _VIA_SPAN_RE.search(name.strip())
+    ms = _VIA_SPAN_RE.search(clean)
     if ms:
         try:
             a, b = int(ms.group(1)), int(ms.group(2))
@@ -314,10 +315,10 @@ def _scan_padstacks(raw: bytes, factor: float) -> dict:
             continue
         vias.append({
             "name": n,
-            "drill_mm": round(parsed["drill_mil"] * factor, 4),
-            "pad_mm": round(parsed["pad_mil"] * factor, 4),
-            "anti_mm": None if parsed["anti_mil"] is None else round(parsed["anti_mil"] * factor, 4),
-            "annular_mm": round(parsed["annular_mil"] * factor, 4),
+            "drill_mm": round(parsed["drill_mil"] * 0.0254, 4),
+            "pad_mm": round(parsed["pad_mil"] * 0.0254, 4),
+            "anti_mm": None if parsed["anti_mil"] is None else round(parsed["anti_mil"] * 0.0254, 4),
+            "annular_mm": round(parsed["annular_mil"] * 0.0254, 4),
             "span": parsed.get("span"),
         })
     vias.sort(key=lambda v: v["drill_mm"])

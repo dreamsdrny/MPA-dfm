@@ -119,7 +119,8 @@ def make_tree(parent, columns, height=24):
         total = sum(c[2] for c in columns)
         extra = max(0, event.width-total-4)
         for cid, _head, width, _minimum, _anchor in columns:
-            tree.column(cid, width=width + (extra if cid == columns[-1][0] else 0))
+            desired=width+(extra if cid==columns[-1][0] else 0)
+            if tree.column(cid,"width")!=desired:tree.column(cid,width=desired)
     tree.bind("<Configure>", fit, add="+")
     vsb = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=tree.yview)
     hsb = ttk.Scrollbar(frame, orient=tk.HORIZONTAL, command=tree.xview)
@@ -127,4 +128,19 @@ def make_tree(parent, columns, height=24):
     tree.grid(row=0, column=0, sticky="nsew")
     vsb.grid(row=0, column=1, sticky="ns")
     hsb.grid(row=1, column=0, sticky="we")
+    detail=tk.Text(frame,height=3,wrap="word",relief="flat",bg=COLORS["card"],fg=COLORS["text"],state="disabled")
+    detail.grid(row=2,column=0,sticky="ew",pady=(4,0))
+    ds=ttk.Scrollbar(frame,orient="vertical",command=detail.yview)
+    ds.grid(row=2,column=1,sticky="ns")
+    detail.configure(yscrollcommand=ds.set)
+    def show_detail(_event=None):
+        selected=tree.selection()
+        if selected:
+            values=tree.item(selected[0],"values")
+            detail.configure(state="normal")
+            detail.delete("1.0","end")
+            detail.insert("1.0","\n".join(f"{tree.heading(cid,'text')}: {value}" for cid,value in zip(ids,values)))
+            detail.configure(state="disabled")
+    tree.bind("<ButtonRelease-1>",lambda e:tree.after_idle(show_detail),add="+")
+    tree._full_text=detail
     return tree

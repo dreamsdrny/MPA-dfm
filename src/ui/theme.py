@@ -322,8 +322,9 @@ class Card(tk.Frame):
             accent.pack_propagate(False)
             ttk.Label(head, text=title, style="CardTitle.TLabel").pack(side=tk.LEFT)
             if subtitle:
-                ttk.Label(head, text="  " + subtitle, style="CardHint.TLabel").pack(
-                    side=tk.LEFT, pady=(2, 0))
+                hint=ttk.Label(inner,text=subtitle,style="CardHint.TLabel",wraplength=300)
+                hint.pack(fill=tk.X,pady=(0,8))
+                inner.bind("<Configure>",lambda event:hint.configure(wraplength=max(120,event.width-24)),add="+")
 
         self.content = ttk.Frame(inner, style="Card.TFrame")
         self.content.pack(fill=tk.BOTH, expand=True)

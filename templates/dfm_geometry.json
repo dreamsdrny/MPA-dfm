@@ -1,0 +1,28 @@
+{
+  "drills": {
+    "pth.drl": {
+      "plated": true,
+      "process": "mechanical",
+      "start_layer": 1,
+      "end_layer": 2,
+      "alignment_confirmed": false
+    },
+    "npth.drl": {
+      "plated": false,
+      "process": "mechanical",
+      "start_layer": 1,
+      "end_layer": 2,
+      "alignment_confirmed": false
+    }
+  },
+  "copper_balance": {
+    "cell_mm": 10,
+    "max_delta_percent": null
+  },
+  "scan_limits": {
+    "batch_size": 256,
+    "max_candidates": 2000000,
+    "max_findings": 10000,
+    "max_density_cells": 20000
+  }
+}

@@ -1,33 +1,33 @@
 """Unified PCB/SMT workbench with snapshot-based background analysis and reports."""
 from copy import deepcopy
-from datetime import datetime
 import os
 import queue
-import threading
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from src.brd_design import extract_brd_design
-from src.dfm_engine import analyze_design
-from src.workbench_report import export_report
-from src.pcb_reader import extract_brd_info
+from src.application.board_inputs import extract_brd_design
+from src.application.pcb_analysis import PCBAnalysisRequest, import_brd, run_pcb_analysis
+from src.application.reports import REPORT_LABELS, default_report_name, export_report
 from src.ui.dfm_params import ParamPanel
 from src.ui.dfm_results import ResultPanel
 from src.ui.theme import (COLORS, Card, apply_app_icon, apply_theme, enable_dpi_awareness, fonts,
                           set_color_mode, refresh_widget_colors)
 from src.ui import i18n
 from src.ui.tasks import TaskRunner
-from src.allegro_bridge import AllegroSession, discover_editor, arrange_editor, point_mm
+from src.application.cad_tools import AllegroSession, discover_editor, arrange_editor, point_mm
 from src.ui.responsive import scroll_workbench, FlowBar, wrap_label
+from src.application.board_inputs import (brd_signature, canonical_brd_path,
+                              require_brd_signature, validate_brd_info)
 
 
 class DFMDialog:
     """设计参数 -> 板厂制程能力比对 (支持红版/四会)。
 
-    打开窗口即自动从 .brd 读取能读到的一切: 层数 / 器件数 / 最小线宽 / 最小线距 /
-    最小颈宽 / 最小孔 / 最大孔 / 激光孔 / 孔环 / 板厚 / 孔壁间距, 表面处理一并带入。
-    板框、阻焊、丝印、拼板、覆盖膜属图形层, .brd 不含, 需人工给 (标"待填")。
+    未成功导入当前版本 BRD 时不允许 PCB/SMT 分析；路径文字不等于已导入。
+    BRD 离线提取约束、层与部分快照；孔径/孔环名称推算只作为提示。
+    实际制造几何由独立应用服务编排原生导出或同版本外部资料，
+    不把板级约束、未知孔型或未确认工艺当成实测制造能力输入。
     判定只用「BRD 读到的值」和「人工确认过的值」; 表单预填的示例值不参与判定,
     免得拿假数据算出 PASS。
     """
@@ -40,11 +40,15 @@ class DFMDialog:
         self.last_result = None
         self.last_design = {}
         self._brd_queue = queue.Queue()
+        self._manufacturing_stage_queue = queue.Queue()
         self._poll_id = None
         self._alive = True
         self._load_token = 0
         self._loading = False
         self._loaded_path = ""
+        self._loaded_signature = None
+        self._brd_error = ""
+        self._changing_board = False
         self._checklist_window = None
         self._input_revision = 0
         self._pcb_state = "idle"
@@ -76,15 +80,22 @@ class DFMDialog:
         apply_theme(self.win)
         apply_app_icon(self.win)
 
-        self.status_var = tk.StringVar(value="就绪：导入 BRD 后点「执行分析」")
+        self.status_var = tk.StringVar(value="就绪：导入 BRD 或 Gerber，确认能力设置后执行 PCB 分析")
+        self.board_state_var = tk.StringVar(value="PCB 统一工作台 · BRD / Gerber 共用输入、参数与结果")
         self.coordinate_dir = tk.StringVar()
         self.report_format = tk.StringVar(value=".xlsx")
         self.language = tk.StringVar(value="English" if i18n.LANGUAGE == "en" else "中文")
         self.color_mode = tk.StringVar(value="Dark" if prefs.get("ui_theme") == "dark" else "Light")
         self.hide_low_priority = tk.BooleanVar(value=False)
-        self.output_pcb_report = tk.BooleanVar(value=False)
+        self.output_pcb_report = tk.BooleanVar(value=True)
         self.gerber_dir = tk.StringVar()
+        self.geometry_data = tk.StringVar()
+        self.odb_path = tk.StringVar()
+        self.odb_step = tk.StringVar()
         self.auto_gerber = tk.BooleanVar(value=True)
+        self.auto_manufacturing = tk.BooleanVar(value=True)
+        from src.application.cad_tools import discover_odb_exporter
+        self.odb_exporter = tk.StringVar(value=discover_odb_exporter(prefs.get("odb_exporter", "")))
         self._exported_gerber = None
         self.editor_path = tk.StringVar(value=discover_editor(prefs.get("allegro_editor", "")))
         self.sync_editor = tk.BooleanVar(value=True)
@@ -106,13 +117,7 @@ class DFMDialog:
         self._apply_language()
         self._ui_poll_id = self.win.after(600, self._refresh_ui_labels)
 
-        if not brd_path and standalone:
-            try:
-                from src.ui.prefs import load_prefs
-
-                brd_path = (load_prefs().get("dfm_brd") or "").strip()
-            except Exception:  # noqa: BLE001
-                brd_path = ""
+        # Gerber-first startup must not silently restore a historical BRD and switch pages.
         if brd_path:
             self.params.brd_path.set(brd_path)
 
@@ -121,7 +126,10 @@ class DFMDialog:
             self.params._set_brd_status("正在读取 BRD ...")
             self._load_from_brd()
         else:
-            self.params._set_brd_status("")
+            self.params._set_brd_status("BRD 可单独导入并自动导出制造资料；Gerber 可直接分析，无需 Cadence。")
+        self._tasks_changed(tuple(self.tasks.pending))
+        # Finish initial DPI/reflow geometry before the first background action.
+        self.win.update_idletasks()
 
     # ------------------------------------------------------------ 组装
     def _build_header(self):
@@ -134,20 +142,31 @@ class DFMDialog:
                  fg=COLORS["header_text"], font=self._fonts["title"]).pack(anchor=tk.W)
         tk.Label(title_box, text="PCB 制造能力 · SMT 工艺能力 · BRD 问题定位",
                  bg=COLORS["header"], fg=COLORS["header_muted"],
-                 font=self._fonts["subtitle"]).pack(anchor=tk.W, pady=(2, 0))
+                  font=self._fonts["subtitle"]).pack(anchor=tk.W, pady=(2, 0))
+        from src.application.version import BUILD_ID
+        tk.Label(hdr, text=BUILD_ID, bg=COLORS["header"], fg=COLORS["header_muted"],
+                 font=self._fonts["subtitle"]).pack(side=tk.RIGHT, padx=18)
 
         btns = FlowBar(self.content, padding=(12, 0))
         btns.pack(fill=tk.X)
+        self.import_gerber_button = ttk.Button(btns, text="导入 PCB 资料（BRD / Gerber / 压缩包）", style="Primary.TButton",
+                                               command=self._import_pcb_file)
+        btns.add(self.import_gerber_button)
+        self.import_gerber_folder_button = ttk.Button(btns, text="导入 Gerber 目录", command=self._import_gerber_folder)
+        btns.add(self.import_gerber_folder_button)
         self.run_button = ttk.Button(btns, text="执行 PCB 分析", style="Primary.TButton",
-                                     command=self._run)
+                                      command=self._run)
         btns.add(self.run_button)
-        self.open_brd_button = ttk.Button(btns, text="打开 BRD", style="Secondary.TButton",
-                                         command=self._open_brd_editor)
-        btns.add(self.open_brd_button)
-
-        btns.add(ttk.Button(btns, text="网络定位", style="Secondary.TButton", command=self._open_net_locate))
-
+        btns.add(ttk.Button(btns, text="CAD / 导出设置", command=self._toggle_advanced))
         btns.add(ttk.Button(btns, text="关闭", style="Secondary.TButton", command=self._close))
+        workflow = ttk.Frame(self.content, padding=(16, 6))
+        workflow.pack(fill=tk.X)
+        self.board_state_label = ttk.Label(workflow, textvariable=self.board_state_var,
+                                           foreground=COLORS["warn"])
+        self.board_state_label.pack(fill=tk.X)
+        wrap_label(self.board_state_label, workflow)
+        ttk.Label(workflow, text="① 导入 BRD / Gerber  →  ② 确认板厂能力 / 铜厚 / 叠构  →  ③ 执行 PCB 分析、预览及导出报告",
+                  style="CardHint.TLabel").pack(anchor=tk.W)
         settings = ttk.Frame(self.content, padding=(16, 3))
         settings.pack(fill=tk.X)
         ttk.Label(settings, text="语言").pack(side=tk.LEFT)
@@ -171,8 +190,11 @@ class DFMDialog:
     def _apply_language(self):
         i18n.LANGUAGE = "en" if self.language.get() == "English" else "zh"
         i18n.localize_widgets(self.win)
-        if self.last_result:
+        self.smt.check_source_changes()
+        if self.last_result and not self._gerber_active():
             self.results.render_capability(self.last_result)
+        if self.gerber_panel.last_result:
+            self.gerber_panel.results.render_capability(self.gerber_panel.last_result)
         if self.smt.last_result:
             self.smt._render_result(self.smt.last_result, self.smt._revision)
         self._save_ui_preferences()
@@ -182,6 +204,7 @@ class DFMDialog:
         refresh_widget_colors(self.win, old)
         self.params._render_fields()
         self.results.refresh_colors()
+        self.gerber_panel.results.refresh_colors()
         self.smt.detail.configure(bg=COLORS["card"], fg=COLORS["text"], insertbackground=COLORS["text"])
         self._tasks_changed(tuple(self.tasks.pending))
         i18n.localize_widgets(self.win)
@@ -191,7 +214,22 @@ class DFMDialog:
         self._ui_poll_id = None
         if not self._alive:
             return
+        while True:
+            try:
+                revision, stage = self._manufacturing_stage_queue.get_nowait()
+            except queue.Empty:
+                break
+            if revision == self._input_revision and "pcb-analysis" in self.tasks.pending:
+                labels = {"gerber": "原生导出 Gerber", "drill": "原生导出 NC Drill", "route": "原生导出 NC Route 槽孔",
+                          "odb": "原生导出 ODB++", "gerber_analysis": "检查 Gerber 与钻孔几何", "odb_analysis": "检查 ODB++ 位号/网络对象"}
+                self.status_var.set("BRD 一键制造分析：" + labels.get(stage, stage) + "…")
+        if self._loaded_signature:
+            try:
+                require_brd_signature(self.brd_path.get().strip(), self._loaded_signature)
+            except (ValueError, OSError) as exc:
+                self._clear_imported_board(str(exc))
         i18n.localize_widgets(self.win)
+        self.smt.check_source_changes()
         if self.language.get() == "English":
             self.win.title("Evan MPA-DFM - PCB / SMT Manufacturing Analysis")
         else:
@@ -199,60 +237,189 @@ class DFMDialog:
         self._ui_poll_id = self.win.after(600, self._refresh_ui_labels)
 
     def _build_report_bar(self):
-        bar = ttk.Frame(self.content, padding=(16, 6))
+        bar = FlowBar(self.content, padding=(12, 4))
         bar.pack(fill=tk.X)
-        ttk.Label(bar, text="报告导出", style="FieldLabel.TLabel").pack(side=tk.LEFT, padx=(0, 12))
-        ttk.Combobox(bar, textvariable=self.report_format, values=(".xlsx", ".csv"),
-                     state="readonly", width=7).pack(side=tk.LEFT, padx=(0, 8))
+        bar.add(ttk.Label(bar, text="报告导出", style="FieldLabel.TLabel"))
+        bar.add(ttk.Combobox(bar, textvariable=self.report_format, values=(".xlsx", ".csv"),state="readonly", width=7))
         self.report_buttons = {}
         for kind, label in [("dfm", "DFM 综合报告"), ("pcb", "PCB 报告"), ("smt", "SMT 报告")]:
             button = ttk.Button(bar, text=label,
                                 style="Primary.TButton" if kind == "dfm" else "Secondary.TButton",
                                 command=lambda k=kind: self._export(k))
-            button.pack(side=tk.LEFT, padx=(0, 8))
+            bar.add(button)
             self.report_buttons[kind] = button
         self.progress = ttk.Progressbar(bar, mode="indeterminate", length=130,
                                         style="Idle.Horizontal.TProgressbar")
-        self.progress.pack(side=tk.RIGHT)
+        bar.add(self.progress)
         self.task_var = tk.StringVar(value="就绪")
         self.task_label = ttk.Label(bar, textvariable=self.task_var, foreground=COLORS["muted"])
-        self.task_label.pack(side=tk.BOTTOM, fill=tk.X)
+        bar.add(self.task_label)
         wrap_label(self.task_label, bar)
         self.task_dot = tk.Canvas(bar, width=16, height=16, bg=COLORS["bg"],
                                   highlightthickness=0)
-        self.task_dot.pack(side=tk.RIGHT)
+        bar.add(self.task_dot)
         self._dot = self.task_dot.create_oval(3, 3, 13, 13, fill=COLORS["faint"], outline="")
         options = ttk.Frame(self.content, padding=(16, 0))
         options.pack(fill=tk.X)
         ttk.Checkbutton(options, text="报告隐藏低优先级", variable=self.hide_low_priority).pack(side=tk.LEFT)
-        ttk.Checkbutton(options, text="需要独立 PCB 报告", variable=self.output_pcb_report).pack(side=tk.LEFT, padx=12)
+        self.preview_report_button = ttk.Button(options,text="Excel 报表预览",command=self._preview_report)
+        self.preview_report_button.pack(side=tk.LEFT,padx=8)
+
+    def _preview_report(self):
+        """Open the exact exported workbook in Excel, not a different HTML layout."""
+        if self._gerber_active():
+            self.gerber_panel.export(preview=True, hide_low_priority=self.hide_low_priority.get())
+            return
+        import tempfile
+        if not self._require_imported_board():
+            return
+        if not self.last_result:
+            messagebox.showinfo("报告", "请先完成当前输入的 PCB 分析",parent=self.win)
+            return
+        self.smt.check_source_changes()
+        pcb=deepcopy(self.last_result)
+        smt=deepcopy(self.smt.last_result)
+        kind="dfm" if smt else "pcb"
+        folder=tempfile.mkdtemp(prefix="evan-report-preview-")
+        stem=os.path.splitext(os.path.basename(self.brd_path.get().strip()))[0] or "board"
+        path=os.path.join(folder,f"{stem}_报告预览.xlsx")
+        meta=dict(board_name=self.last_design.get("board_name",""),hide_low_priority=self.hide_low_priority.get())
+        revision = self._input_revision
+        def done(_):
+            if revision == self._input_revision:
+                os.startfile(path)
+            else:
+                self.status_var.set("预览生成期间输入已变化，已丢弃旧预览。")
+        self.tasks.submit("report-preview",lambda:export_report(kind,path,pcb,smt,meta),
+            done,lambda error:messagebox.showerror("报告预览",error,parent=self.win))
 
     def _build_coordinate_bar(self):
-        gerber = ttk.Frame(self.content, padding=(16, 3))
+        primary = FlowBar(self.content, padding=(12, 2))
+        primary.pack(fill=tk.X)
+        self.gerber_view_button = ttk.Button(primary, text="Gerber 问题预览", command=self._preview_gerber)
+        primary.add(self.gerber_view_button)
+        primary.add(ttk.Button(primary, text="Gerber/ODB++ ↔ BOM 协同", command=self._open_manufacturing))
+        self.advanced_frame = ttk.Frame(self.content)
+        self._advanced_visible = False
+        native = FlowBar(self.advanced_frame, padding=(12, 2))
+        native.pack(fill=tk.X)
+        self.import_brd_button = self.import_gerber_button
+        self.open_brd_button = ttk.Button(native, text="打开 BRD", command=self._open_brd_editor)
+        native.add(self.open_brd_button)
+        native.add(ttk.Button(native, text="网络定位", command=self._open_net_locate))
+        self.trace_filter_button = ttk.Button(native, text="阻抗 / 走线原生高亮", command=self._open_trace_filter)
+        native.add(self.trace_filter_button)
+        native.add(ttk.Checkbutton(native, text="BRD 一键导出并分析 Gerber / NC Drill / NC Route / ODB++",
+                                  variable=self.auto_manufacturing))
+        native.add(ttk.Entry(native, textvariable=self.odb_exporter, width=30))
+        native.add(ttk.Button(native, text="设置 ODB++ 导出器", command=self._configure_odb_exporter))
+        gerber = FlowBar(self.advanced_frame, padding=(12, 2))
         gerber.pack(fill=tk.X)
-        ttk.Checkbutton(gerber, text="执行分析时后台导出 Gerber", variable=self.auto_gerber).pack(side=tk.LEFT)
-        ttk.Entry(gerber, textvariable=self.gerber_dir, width=35).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=8)
-        ttk.Button(gerber, text="选择已有 Gerber", command=self._browse_gerber).pack(side=tk.LEFT)
-        ttk.Button(gerber, text="导出 Gerber", command=self._export_gerber_only).pack(side=tk.LEFT, padx=6)
-        ttk.Button(gerber, text="Gerber 问题预览", command=self._preview_gerber).pack(side=tk.LEFT)
-        bar = ttk.Frame(self.content, padding=(16, 2))
+        gerber.add(ttk.Checkbutton(gerber, text="每次从 BRD 重新导出 Gerber", variable=self.auto_gerber))
+        gerber.add(ttk.Entry(gerber, textvariable=self.gerber_dir, width=28))
+        gerber.add(ttk.Button(gerber, text="选择已有 Gerber", command=self._browse_gerber))
+        gerber.add(ttk.Button(gerber, text="Gerber/ODB++ ↔ BOM 协同", command=self._open_manufacturing))
+        self.preview_gerber_button = ttk.Button(gerber, text="Gerber 问题预览", command=self._preview_gerber)
+        gerber.add(self.preview_gerber_button)
+        gerber.add(ttk.Button(gerber, text="ODB++ 问题预览", command=lambda: self._preview_gerber("odb_preview")))
+        geometry = FlowBar(self.advanced_frame, padding=(12, 2))
+        geometry.pack(fill=tk.X)
+        geometry.add(ttk.Label(geometry, text="实际几何检查始终执行；无已有 Gerber 时自动导出"))
+        geometry.add(ttk.Entry(geometry, textvariable=self.geometry_data, width=28))
+        geometry.add(ttk.Button(geometry, text="补充几何资料 JSON", command=self._browse_geometry_data))
+        geometry.add(ttk.Button(geometry, text="生成补充资料模板", command=self._create_geometry_template))
+        odb = FlowBar(self.advanced_frame, padding=(12, 2))
+        odb.pack(fill=tk.X)
+        odb.add(ttk.Label(odb, text="对象 DFM（可选，同版 ODB++）"))
+        odb.add(ttk.Entry(odb, textvariable=self.odb_path, width=32))
+        odb.add(ttk.Button(odb, text="选择 ODB++ 对象资料", command=self._browse_odb))
+        odb.add(ttk.Label(odb, text="step"))
+        odb.add(ttk.Entry(odb, textvariable=self.odb_step, width=12))
+        odb.add(ttk.Label(odb, text="逐焊盘/过孔/阻焊/锡膏；未验证 BRD 对齐不跳转"))
+        bar = FlowBar(self.advanced_frame, padding=(12, 2))
         bar.pack(fill=tk.X)
-        ttk.Label(bar, text="问题坐标来源").pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Entry(bar, textvariable=self.coordinate_dir, width=40).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(bar, text="选择导出目录", command=self._browse_coordinates).pack(side=tk.LEFT, padx=6)
-        ttk.Button(bar, text="导入 COMP_XY", command=self._import_comp_xy).pack(side=tk.LEFT, padx=6)
-        ttk.Button(bar, text="生成 Allegro 坐标脚本", command=self._generate_coordinates).pack(side=tk.LEFT)
-        editor = ttk.Frame(self.content, padding=(16, 2))
+        bar.add(ttk.Label(bar, text="问题坐标来源"))
+        bar.add(ttk.Entry(bar, textvariable=self.coordinate_dir, width=28))
+        bar.add(ttk.Button(bar, text="选择导出目录", command=self._browse_coordinates))
+        bar.add(ttk.Button(bar, text="导入 COMP_XY", command=self._import_comp_xy))
+        bar.add(ttk.Button(bar, text="生成 Allegro 坐标脚本", command=self._generate_coordinates))
+        editor = FlowBar(self.advanced_frame, padding=(12, 2))
         editor.pack(fill=tk.X)
-        ttk.Button(editor, text="设置 PCB Editor", command=self._configure_editor).pack(side=tk.LEFT)
+        editor.add(ttk.Button(editor, text="设置 PCB Editor", command=self._configure_editor))
         self.editor_export_button = ttk.Button(editor, text="打开 BRD 并提取坐标",
                                                command=self._open_export_editor)
-        self.editor_export_button.pack(side=tk.LEFT, padx=6)
-        ttk.Checkbutton(editor, text="选点同步到 Allegro", variable=self.sync_editor).pack(side=tk.LEFT)
-        ttk.Checkbutton(editor, text="并排显示", variable=self.beside_editor).pack(side=tk.LEFT, padx=6)
+        editor.add(self.editor_export_button)
+        editor.add(ttk.Checkbutton(editor, text="选点同步到 Allegro", variable=self.sync_editor))
+        editor.add(ttk.Checkbutton(editor, text="并排显示", variable=self.beside_editor))
         editor_label = ttk.Label(editor, textvariable=self.editor_status)
-        editor_label.pack(side=tk.BOTTOM, fill=tk.X)
+        editor.add(editor_label)
         wrap_label(editor_label, editor)
+
+    def _toggle_advanced(self):
+        self._advanced_visible = not self._advanced_visible
+        if self._advanced_visible:
+            self.advanced_frame.pack(fill=tk.X, before=self.workbench)
+        else:
+            self.advanced_frame.pack_forget()
+
+    def _gerber_active(self):
+        # Analysis routing follows imported data, never the selected notebook tab.
+        return hasattr(self, "gerber_panel") and not self.brd_path.get().strip()
+
+    def _import_pcb_file(self):
+        path = filedialog.askopenfilename(parent=self.win, title="导入 PCB 资料：BRD / Gerber / 压缩包",
+            filetypes=[("PCB 资料", "*.brd *.art *.gbr *.ger *.gtl *.gbl *.gts *.gbs *.gto *.gbo *.gko *.zip *.tgz *.gz"),
+                       ("所有文件", "*.*")])
+        if not path:
+            return
+        if path.lower().endswith(".brd"):
+            self.brd_path.set(path)
+            self._load_from_brd()
+        else:
+            self._load_gerber_source(path)
+
+    def _load_gerber_source(self, path):
+        self.workbench.select(self.brd_body)
+        if self.brd_path.get().strip():
+            # BRD + existing Gerber uses the BRD-bound workflow. Keep both sources.
+            from pathlib import Path
+            if not Path(path).is_dir():
+                messagebox.showinfo("BRD 配套 Gerber", "BRD 已导入。请选择同版本 Gerber 目录；"
+                    "若需独立分析文件/压缩包，请先点击「清空资料」。", parent=self.win)
+                return
+            self.auto_manufacturing.set(False)
+            self.auto_gerber.set(False)
+            self.gerber_dir.set(path)
+            self.status_var.set("已选择 BRD 配套 Gerber，执行 PCB 分析将使用这两份资料。")
+        else:
+            self.gerber_panel.load(path)
+
+    def _clear_pcb_inputs(self):
+        self.brd_path.set("")
+        self.gerber_panel.source.set("")
+        self.params.reset_design()
+        self.results.clear()
+        self.status_var.set("资料已清空，请导入 BRD 或 Gerber")
+
+    def _import_gerber_file(self):
+        self._import_pcb_file()
+
+    def _import_gerber_folder(self):
+        path = filedialog.askdirectory(parent=self.win, title="导入 Gerber 目录（单独分析或补充当前 BRD）")
+        if path:
+            self._load_gerber_source(path)
+
+    def _gerber_state_changed(self):
+        if hasattr(self, "smt"):
+            if self._gerber_active():
+                self.last_result = self.gerber_panel.last_result
+                self._pcb_state = self.gerber_panel.state
+                self.status_var.set(self.gerber_panel.status.get())
+            self._refresh_action_states()
+
+    def _open_manufacturing(self):
+        from src.ui.manufacturing_dialog import open_manufacturing
+        open_manufacturing(self.win)
 
     def _browse_coordinates(self):
         path = filedialog.askdirectory(parent=self.win, title="选择当前 BRD 的 SKILL / NC Drill 导出目录")
@@ -264,17 +431,67 @@ class DFMDialog:
         path = filedialog.askdirectory(parent=self.win, title="选择同一版本的一套 Gerber 目录")
         if path:
             self.auto_gerber.set(False)
+            self.auto_manufacturing.set(False)
             self.gerber_dir.set(path)
 
+    def _browse_geometry_data(self):
+        path = filedialog.askopenfilename(parent=self.win, title="选择当前 BRD 的 PCB 几何补充资料",
+                                         filetypes=[("PCB 几何资料", "*.json")])
+        if path:
+            self.geometry_data.set(path)
+
+    def _browse_odb(self):
+        path = filedialog.askopenfilename(parent=self.win, title="选择与当前 BRD 同版的 ODB++",
+                                          filetypes=[("ODB++", "*.tgz *.tar.gz *.tar *.zip"), ("所有文件", "*.*")])
+        if path:
+            self.auto_manufacturing.set(False)
+            self.odb_path.set(path)
+
+    def _configure_odb_exporter(self):
+        path = filedialog.askopenfilename(parent=self.win, title="选择 ODB++ Inside 的 brd2odb.exe",
+                                          filetypes=[("ODB++ Inside", "brd2odb.exe"), ("程序", "*.exe")])
+        if path:
+            self.odb_exporter.set(path)
+            from src.ui.prefs import load_prefs, save_prefs
+            prefs = load_prefs()
+            prefs["odb_exporter"] = path
+            save_prefs(prefs)
+
+    def _create_geometry_template(self):
+        if not self._require_imported_board():
+            return
+        stem = os.path.splitext(os.path.basename(self.brd_path.get().strip()))[0] or "board"
+        path = filedialog.asksaveasfilename(parent=self.win, title="保存当前 BRD 的几何补充资料模板",
+                                           defaultextension=".json", initialfile=f"{stem}_geometry_data.json",
+                                           filetypes=[("PCB 几何资料", "*.json")])
+        if not path:
+            return
+        from src.application.reports import write_geometry_template
+        try:
+            write_geometry_template(self.brd_path.get().strip(),
+                                    self.coordinate_dir.get().strip() or self.gerber_dir.get().strip(), path)
+        except (ValueError, OSError) as exc:
+            messagebox.showerror("补充资料模板", str(exc), parent=self.win)
+            return
+        self.geometry_data.set(path)
+        messagebox.showinfo("补充资料模板", "模板已绑定当前 BRD 版本。请用文本编辑器填写实际 NC Drill 目录、"
+                            "孔型/跨度/对齐、逐焊盘资料和板厂能力；空白项不会判为通过。", parent=self.win)
+
     def _export_gerber_only(self):
-        from src.gerber_export import export_brd_gerbers
+        from src.application.cad_tools import export_brd_gerbers
+        if not self._require_imported_board():
+            return
         path = self.brd_path.get().strip()
         if not os.path.isfile(path):
             messagebox.showwarning("Gerber", "请先选择 BRD", parent=self.win)
             return
         editor = self.editor_path.get()
         output = os.path.join(os.path.dirname(os.path.abspath(path)), "Gerber_DFM")
+        signature = self._loaded_signature
         def done(bundle):
+            if self._loaded_signature != signature or self._brd_block_reason():
+                self.status_var.set("BRD 已变化，已丢弃过期 Gerber 导出结果")
+                return
             self._exported_gerber = bundle
             self.auto_gerber.set(False)
             self.gerber_dir.set(bundle["directory"])
@@ -282,8 +499,11 @@ class DFMDialog:
         self.tasks.submit("gerber-export", lambda: export_brd_gerbers(path, output, editor), done,
                           lambda error: messagebox.showerror("Gerber 导出失败", error, parent=self.win))
 
-    def _preview_gerber(self):
-        path = (self.last_result or {}).get("gerber_preview")
+    def _preview_gerber(self, key="gerber_preview"):
+        if self._gerber_active():
+            self.gerber_panel.preview()
+            return
+        path = (self.last_result or {}).get(key)
         if path and os.path.isfile(path):
             import webbrowser
             from pathlib import Path
@@ -292,19 +512,19 @@ class DFMDialog:
             messagebox.showinfo("Gerber", "请先完成 Gerber 分析，再打开问题预览", parent=self.win)
 
     def _import_comp_xy(self):
-        from src.pick import parse_placement_txt
-        from src.pcb_locations import component_coordinates
+        if not self._require_imported_board():
+            return
+        from src.application.locations import import_component_coordinates
         path = filedialog.askopenfilename(parent=self.win, title="选择 BRD 导出的 COMP_XY 坐标文件",
                                          filetypes=[("COMP_XY 坐标", "*.txt"), ("所有文件", "*.*")])
         if not path:
             return
-        parsed = parse_placement_txt(path)
-        if not parsed.get("ok"):
-            messagebox.showerror("坐标导入", parsed.get("error", "未读到坐标"), parent=self.win)
+        try:
+            coordinates = import_component_coordinates(path, (self.brd_info or {}).get("units", ""))
+        except (ValueError, OSError) as exc:
+            messagebox.showerror("坐标导入", str(exc), parent=self.win)
             return
         self.coordinate_dir.set(os.path.dirname(path))
-        unit = (self.brd_info or {}).get("units") or parsed.get("unit")
-        coordinates = component_coordinates({"components": parsed["items"]}, unit)
         self._component_coordinates = coordinates
         self._component_brd_path = os.path.normcase(os.path.abspath(self.brd_path.get().strip()))
         self.results.show_components(coordinates, "COMP_XY 器件原点；丝印需另外的图形导出")
@@ -314,7 +534,7 @@ class DFMDialog:
             self._run()
 
     def _generate_coordinates(self):
-        from src.allegro_skill import write_bundle
+        from src.application.cad_tools import write_bundle
         folder = filedialog.askdirectory(parent=self.win, title="选择坐标脚本和 CSV 输出目录")
         if not folder:
             return
@@ -333,16 +553,86 @@ class DFMDialog:
         messagebox.showinfo("坐标导出", "命令已复制。在 Allegro 打开同一版本 BRD，执行：\n\n" + command +
                             "\n\n导出后重新执行 PCB 分析，报告将包含问题 X/Y 和定位命令。", parent=self.win)
 
+    def _brd_block_reason(self):
+        path = self.brd_path.get().strip()
+        if self._loading:
+            return "BRD 正在读取，请等待完成"
+        if not path:
+            return "请先导入 BRD 文件，成功读取后才能分析"
+        if self._brd_error:
+            return self._brd_error
+        if not self.brd_info or canonical_brd_path(path) != canonical_brd_path(self._loaded_path):
+            return "BRD 尚未成功读取，请点击「从 BRD 读取」"
+        try:
+            require_brd_signature(path, self._loaded_signature)
+        except (ValueError, OSError) as exc:
+            return str(exc)
+        return ""
+
+    def _require_imported_board(self):
+        reason = self._brd_block_reason()
+        if not reason:
+            return True
+        if self._loaded_signature:
+            self._clear_imported_board(reason)
+        self._tasks_changed(tuple(self.tasks.pending))
+        messagebox.showwarning("BRD 未就绪", reason, parent=self.win)
+        return False
+
+    def _refresh_action_states(self):
+        """按钮状态统一由当前 BRD、任务和结果决定，完成回调不能强制重新启用。"""
+        pending = self.tasks.pending
+        reason = self._brd_block_reason()
+        ready = not reason
+        self.run_button.configure(state=tk.NORMAL if ready and not any(
+            key in pending for key in ("pcb-analysis", "gerber-export")) else tk.DISABLED)
+        gerber_active = self._gerber_active()
+        importing = any(key in pending for key in ("gerber-import", "gerber-analysis"))
+        self.import_gerber_button.configure(state=tk.DISABLED if importing else tk.NORMAL)
+        self.import_gerber_folder_button.configure(state=tk.DISABLED if importing else tk.NORMAL)
+        self.run_button.configure(text="执行 PCB 分析",
+                                  state=tk.NORMAL if (self.gerber_panel.ready if gerber_active else ready and
+                                      not any(key in pending for key in ("pcb-analysis", "gerber-export"))) else tk.DISABLED)
+        available_reports = {
+            "dfm": ready and self.last_result and self.smt.last_result,
+            "pcb": ready and self.last_result and self.output_pcb_report.get(),
+            "smt": ready and self.smt.last_result,
+        }
+        if gerber_active:
+            available_reports = {"pcb": bool(self.gerber_panel.last_result), "dfm": False, "smt": False}
+        for kind, button in self.report_buttons.items():
+            button._flow_hidden = False
+            button.configure(text={"pcb": "PCB 报告", "dfm": "DFM 综合报告", "smt": "SMT 报告"}[kind],
+                             state=tk.NORMAL if available_reports[kind] and "report-export" not in pending else tk.DISABLED)
+            button.grid()
+        self.preview_report_button.configure(state=tk.NORMAL if ready and self.last_result and
+            "report-preview" not in pending else tk.DISABLED)
+        self.preview_gerber_button.configure(state=tk.NORMAL if ready and
+             (self.last_result or {}).get("gerber_preview") else tk.DISABLED)
+        gerber_result = self.gerber_panel.last_result if gerber_active else self.last_result
+        self.gerber_view_button.configure(state=tk.NORMAL if (gerber_result or {}).get("gerber_preview") else tk.DISABLED)
+        if gerber_active:
+            self.preview_report_button.configure(state=tk.NORMAL if gerber_result and
+                "report-preview" not in pending else tk.DISABLED)
+        self.params.set_board_available(ready or (gerber_active and bool(self.gerber_panel.info)))
+        self.results.set_input_mode(gerber_active)
+        self.smt.refresh_availability()
+        self.board_state_label.configure(foreground=COLORS["success"] if ready else COLORS["warn"])
+        self.board_state_var.set((f"BRD 已导入 · {os.path.basename(self._loaded_path)} · 可执行分析"
+                                  if ready else f"分析已禁用 · {reason}"))
+        if gerber_active:
+            self.board_state_var.set(f"Gerber 已导入 · {os.path.basename(self.gerber_panel.source.get())} · 可执行 PCB 分析"
+                                     if self.gerber_panel.info else "请导入 BRD 或 Gerber · 共用下方参数和结果")
+            self.board_state_label.configure(foreground=COLORS["success"] if self.gerber_panel.info else COLORS["muted"])
+        i18n.localize_widgets(self.win)
+
     def _tasks_changed(self, pending):
-        self.run_button.configure(state=tk.DISABLED if self._loading or "pcb-analysis" in pending or "gerber-export" in pending else tk.NORMAL)
-        for button in self.report_buttons.values():
-            button.configure(state=tk.DISABLED if "report-export" in pending else tk.NORMAL)
-        if not self.output_pcb_report.get():
-            self.report_buttons["pcb"].configure(state=tk.DISABLED)
-        if pending:
-            names = {"pcb-analysis": "PCB 分析", "smt-analysis": "SMT 分析",
-                     "report-export": "报告导出"}
-            self.task_var.set("处理中 · " + " / ".join(names.get(p, p) for p in pending))
+        self._refresh_action_states()
+        if pending or self._loading:
+            names = {"pcb-analysis": "PCB 分析", "smt-analysis": "SMT 分析", "gerber-import": "Gerber 读取", "gerber-analysis": "Gerber 分析",
+                      "report-export": "报告导出"}
+            labels = (["读取 BRD"] if self._loading else []) + [names.get(p, p) for p in pending]
+            self.task_var.set("处理中 · " + " / ".join(labels))
             self.task_label.configure(foreground=COLORS["primary"])
             self.task_dot.itemconfigure(self._dot, fill=COLORS["primary"])
             self.progress.configure(mode="indeterminate", style="Running.Horizontal.TProgressbar")
@@ -352,29 +642,41 @@ class DFMDialog:
             color = COLORS["primary"] if self._pcb_state == "complete" else (
                 COLORS["danger"] if self._pcb_state == "error" else COLORS["faint"])
             self.task_var.set({"complete": "PCB 分析完成", "error": "PCB 分析失败"}.get(
-                self._pcb_state, "就绪"))
+                self._pcb_state, "等待导入 BRD" if self._brd_block_reason() else "就绪"))
             self.task_label.configure(foreground=color)
             self.task_dot.itemconfigure(self._dot, fill=color)
             self.progress.configure(mode="determinate", value=100 if self._pcb_state == "complete" else 0,
                                     style="Complete.Horizontal.TProgressbar" if self._pcb_state == "complete"
-                                    else "Idle.Horizontal.TProgressbar")
+                                     else "Idle.Horizontal.TProgressbar")
+            if self._gerber_active():
+                self.task_var.set({"complete": "Gerber 分析完成", "error": "Gerber 操作失败"}.get(
+                    self.gerber_panel.state, "就绪" if self.gerber_panel.info else "等待导入 Gerber"))
 
     def _build_body(self):
         self.workbench = ttk.Notebook(self.content)
         self.workbench.pack(fill=tk.BOTH, expand=True, padx=12, pady=10)
         body = ttk.Frame(self.workbench, style="TFrame", padding=(16, 14, 16, 12))
-        self.workbench.add(body, text="PCB 厂 · 制造能力分析")
+        self.brd_body = body
+        self.workbench.add(body, text="PCB 分析 · BRD / Gerber")
         body.columnconfigure(0, weight=1, minsize=350)
         body.columnconfigure(1, weight=1)
         body.rowconfigure(0, weight=1)
 
-        left_card = Card(body, "设计参数", "BRD 值自动带入并隐藏 · 只留需人工补的项")
+        left_card = Card(body, "PCB 资料与能力设置", "BRD / Gerber 共用参数；缺数据不自动判为通过")
         left_card.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
         right_card = Card(body, "分析结果", "")
         right_card.grid(row=0, column=1, sticky="nsew")
 
         self.params = ParamPanel(left_card.content, self._browse_brd, self._load_from_brd,
-                                 font_bold=self._fonts["ui_bold"])
+                                  font_bold=self._fonts["ui_bold"], unified=True)
+        inputs = ttk.Frame(left_card.content, style="Card.TFrame")
+        inputs.pack(fill=tk.X)
+        ttk.Label(inputs, text="BRD 文件（可选）", style="FieldLabel.TLabel").pack(anchor=tk.W)
+        brd_row = FlowBar(inputs, style="Card.TFrame")
+        brd_row.pack(fill=tk.X)
+        brd_row.add(ttk.Entry(brd_row, textvariable=self.params.brd_path, width=35))
+        brd_row.add(ttk.Button(brd_row, text="导入 BRD", command=self._browse_brd))
+        brd_row.add(ttk.Button(brd_row, text="重新读取", command=self._load_from_brd))
         self.params.pack(fill=tk.BOTH, expand=True)
 
         self.results = ResultPanel(right_card.content,
@@ -382,6 +684,26 @@ class DFMDialog:
                                     on_open_point=self._open_problem_point,
                                     on_point_selected=self._sync_problem_point)
         self.results.pack(fill=tk.BOTH, expand=True)
+        from src.ui.gerber_panel import GerberPanel
+        self.gerber_panel = GerberPanel(body, self.tasks, self._gerber_state_changed,
+                                       shared_params=self.params, shared_results=self.results)
+        self.geometry_data.trace_add("write", lambda *_:
+                                     self.gerber_panel.geometry_data.set(self.geometry_data.get()))
+        ttk.Label(inputs, text="Gerber 文件 / 目录 / 压缩包", style="FieldLabel.TLabel").pack(anchor=tk.W, pady=(8, 0))
+        self.pcb_gerber_source = tk.StringVar()
+        gerber_row = FlowBar(inputs, style="Card.TFrame")
+        gerber_row.pack(fill=tk.X)
+        gerber_row.add(ttk.Entry(gerber_row, textvariable=self.pcb_gerber_source, width=35))
+        gerber_row.add(ttk.Button(gerber_row, text="读取 Gerber", command=lambda:
+                                  self._load_gerber_source(self.pcb_gerber_source.get().strip())))
+        gerber_row.add(ttk.Button(gerber_row, text="清空资料", command=self._clear_pcb_inputs))
+        self.pcb_gerber_source.trace_add("write", self._gerber_path_edited)
+        self.gerber_panel.source.trace_add("write", lambda *_:
+                                         self.pcb_gerber_source.set(self.gerber_panel.source.get()))
+        self.gerber_dir.trace_add("write", lambda *_:
+                                 self.pcb_gerber_source.set(self.gerber_dir.get()) if self.brd_path.get().strip() else None)
+        source_hint = ttk.Label(inputs, textvariable=self.gerber_panel.status, style="CardHint.TLabel", wraplength=350)
+        source_hint.pack(fill=tk.X, pady=(4, 8))
         body.configure(height=600)
 
         # 兼容旧属性名 (早期代码/测试直接访问这些变量)
@@ -396,16 +718,64 @@ class DFMDialog:
         from src.ui.smt_panel import SMTPanel
 
         self.smt = SMTPanel(self.workbench, self._smt_design, self.tasks,
-                            on_export=lambda: self._export("smt"))
+                             on_export=lambda: self._export("smt"), on_locate=self._open_problem_point,
+                             get_gerber=lambda: self.gerber_dir.get().strip(),
+                             get_block_reason=self._brd_block_reason,
+                             on_result_changed=self._refresh_action_states)
         self.workbench.add(self.smt, text="SMT 厂 · 工艺能力分析 / YAML")
+        from src.ui.impedance_panel import ImpedancePanel
+        self.impedance_panel = ImpedancePanel(self.workbench)
+        self.workbench.add(self.impedance_panel, text="Allegro 阻抗 / 走线高亮")
         self.smt.detail.configure(bg=COLORS["card"], fg=COLORS["text"], insertbackground=COLORS["text"])
         for var in list(self.entries.values()) + [self.params.factory, self.params.level,
-                    self.params.board_type, self.params.copper_oz, self.params.surface_finish,
+                    self.params.board_type, self.params.copper_um, self.params.surface_finish,
                     self.params.board_name, self.params.polarity_var, self.params.panelized_var,
-                    self.brd_path, self.coordinate_dir, self.gerber_dir, self.auto_gerber]:
+                    self.coordinate_dir, self.gerber_dir, self.auto_gerber, self.geometry_data, self.odb_path, self.odb_step,
+                    self.editor_path, self.auto_manufacturing, self.odb_exporter]:
             var.trace_add("write", self._invalidate_results)
+        self.brd_path.trace_add("write", self._brd_path_changed)
+        self.smt.load_builtin()
+        self.workbench.bind("<<NotebookTabChanged>>", lambda _: self._tasks_changed(tuple(self.tasks.pending)))
+
+    def _brd_path_changed(self, *_args):
+        self.workbench.select(self.brd_body)
+        self.gerber_panel.source.set("")
+        self._clear_imported_board("")
+
+    def _gerber_path_edited(self, *_):
+        if self._gerber_active() and self.pcb_gerber_source.get().strip() != self.gerber_panel.source.get():
+            self.gerber_panel.info = None
+            self.gerber_panel.invalidate()
+            self.status_var.set("Gerber 路径已变化，请点击读取 Gerber")
+
+    def _clear_imported_board(self, reason):
+        self._load_token += 1  # 旧读取线程的结果不能让新路径变为已导入
+        self._loading = False
+        self._loaded_path = ""
+        self._loaded_signature = None
+        self._brd_error = reason
+        self.brd_info = None
+        self._coordinate_load_token += 1
+        self._component_brd_path = ""
+        self._component_coordinates = []
+        self._exported_gerber = None
+        self._changing_board = True
+        try:
+            self.params.reset_design()
+            self.coordinate_dir.set("")
+            self.gerber_dir.set("")
+            self.geometry_data.set("")
+            self.odb_path.set("")
+            self.odb_step.set("")
+            self.smt.invalidate(clear_inputs=True)
+        finally:
+            self._changing_board = False
+        self._invalidate_results()
+        self._set_brd_status(reason or "请先选择 BRD 文件并点击「从 BRD 读取」")
 
     def _invalidate_results(self, *_args):
+        if self._changing_board:
+            return
         self._input_revision += 1
         self.last_result = None
         self.last_design = {}
@@ -414,19 +784,24 @@ class DFMDialog:
         self.results.clear(clear_components=not same_board)
         if not same_board:
             self._component_coordinates = []
-        self.result_var.set("输入已变化，请重新执行 PCB 分析")
+        reason = self._brd_block_reason()
+        self.result_var.set(reason or "输入已变化，请重新执行 PCB 分析")
+        self.status_var.set(reason or "输入已变化，请重新执行 PCB 分析")
         self.smt.invalidate()
         self._pcb_state = "idle"
+        if hasattr(self, "gerber_panel") and self._gerber_active():
+            self.gerber_panel.invalidate()
         self._tasks_changed(tuple(self.tasks.pending))
 
     def _smt_design(self):
-        if self._loading:
-            raise ValueError("BRD 正在读取，请等待完成")
+        reason = self._brd_block_reason()
+        if reason:
+            raise ValueError(reason)
         path = self.brd_path.get().strip()
-        if path and path != self._loaded_path:
-            raise ValueError("BRD 路径已变化，请先点击「从 BRD 读取」")
         design = self.params.read_design()
         design["_input_brd"] = path
+        design["_brd_signature"] = self._loaded_signature
+        design["_brd_sha256"] = (self.brd_info or {}).get("_import_sha256")
         return design
 
     def _configure_editor(self):
@@ -513,9 +888,14 @@ class DFMDialog:
         self._start_editor(export=True)
 
     def _open_problem_point(self, point):
+        if self._gerber_active():
+            self.gerber_panel.preview()
+            return
         self._start_editor(point=point)
 
     def _sync_problem_point(self, point):
+        if self._gerber_active():
+            return
         if point.get("brd_alignment") is False:
             return
         if self.sync_editor.get():
@@ -564,9 +944,9 @@ class DFMDialog:
         self._schedule_editor_poll()
 
     def _refresh_component_coordinates(self, auto_analyze=False, select_tab=False):
-        from src.pick import build_inventory
-        from src.pcb_locations import component_coordinates
-        from src.net_locate import parse_traces_csv
+        if self._brd_block_reason():
+            return
+        from src.application.locations import refresh_component_coordinates
         path = self.brd_path.get().strip()
         directory = self.coordinate_dir.get().strip()
         unit = (self.brd_info or {}).get("units", "")
@@ -574,15 +954,11 @@ class DFMDialog:
         token = self._coordinate_load_token
 
         def work():
-            search = [directory] if directory else [os.path.join(os.path.dirname(os.path.abspath(path)), "定位清单")]
-            inventory = build_inventory("" if directory else path, extra_dirs=search)
-            coordinates = component_coordinates(inventory, unit)
-            trace = parse_traces_csv(os.path.join(directory, "evan_traces.csv")) if directory else {}
-            return coordinates, bool(inventory.get("holes") or trace.get("items"))
+            return refresh_component_coordinates(path, directory, unit)
 
         def done(payload):
             if (token != self._coordinate_load_token or path != self.brd_path.get().strip()
-                    or directory != self.coordinate_dir.get().strip()):
+                    or directory != self.coordinate_dir.get().strip() or self._brd_block_reason()):
                 return
             coordinates, has_geometry = payload
             self._component_coordinates = coordinates
@@ -608,6 +984,11 @@ class DFMDialog:
         self._checklist_window = MainWindow(self.win)
         self._checklist_window.root.title("MPA-DFM · Checklist 自动填写")
         self._checklist_window.brd_path.set(self.brd_path.get())
+        self._checklist_window.copper_um.set(self.params.copper_um.get())
+
+    def _open_trace_filter(self):
+        """Select the integrated native-plugin page, not a detached viewer."""
+        self.workbench.select(self.impedance_panel)
 
     # ------------------------------------------------------------ BRD 带入
     def _open_locate(self):
@@ -662,21 +1043,20 @@ class DFMDialog:
 
     def _load_from_brd(self):
         path = self.brd_path.get().strip()
-        if not path:
-            messagebox.showwarning("提示", "请先选择 BRD 文件")
+        try:
+            brd_signature(path)
+        except (ValueError, OSError) as exc:
+            self._clear_imported_board(str(exc))
             return
-        if not os.path.exists(path):
-            self._set_brd_status(f"BRD 文件不存在: {path}")
-            return
+        self._clear_imported_board("")
         self._set_brd_status("正在读取 BRD ...")
         self._load_token += 1
         token = self._load_token
         self._loading = True
         self._loaded_path = ""
         self.brd_info = None
-        self.params.reset_design()
-        self.smt.invalidate(clear_inputs=True)
-        self.run_button.configure(state=tk.DISABLED)
+        self._tasks_changed(tuple(self.tasks.pending))
+        self.status_var.set("BRD 正在读取，请等待完成")
         if self.standalone:
             try:
                 from src.ui.prefs import load_prefs, save_prefs
@@ -686,20 +1066,16 @@ class DFMDialog:
                 save_prefs(data)
             except Exception:  # noqa: BLE001  记不住不影响分析
                 pass
-        threading.Thread(target=self._read_brd_worker, args=(path, token), daemon=True).start()
+        self.tasks.submit("brd-import", lambda: self._read_brd_worker(path, token), lambda _: None,
+                          lambda error: self._brd_queue.put((token, path, "err", error)))
 
     def _read_brd_worker(self, path, token):
         """后台线程只做解析, 结果放队列; 所有 Tk 调用都回主线程 (见 _poll_brd_queue)。
 
-        优先解析 .brd 内的约束 XML; 老格式 (无 zip 归档) 退回 pcb_reader 的二进制正则。
+        仅接受可解析的 BRD 约束对象；不把文本特征猜测当正式导入。
         """
         try:
-            info = extract_brd_design(path)
-            if not info.get("ok"):
-                legacy = extract_brd_info(path)
-                legacy["_legacy"] = True
-                legacy["_new_error"] = info.get("error")
-                info = legacy
+            info = import_brd(path, reader=extract_brd_design)
         except Exception as exc:  # noqa: BLE001
             self._brd_queue.put((token, path, "err", str(exc)))
             return
@@ -715,21 +1091,34 @@ class DFMDialog:
                 if token != self._load_token:
                     continue
                 self._loading = False
-                self._tasks_changed(tuple(self.tasks.pending))
                 if path != self.brd_path.get().strip():
                     self._set_brd_status("路径已变化，请重新读取 BRD")
+                    self._tasks_changed(tuple(self.tasks.pending))
                     continue
                 if kind == "ok":
-                    self.brd_info = payload
-                    self.params.apply_brd(payload)
-                    self._loaded_path = path
-                    self._refresh_component_coordinates()
+                    try:
+                        validate_brd_info(payload)
+                        require_brd_signature(path, payload.get("_import_signature"))
+                        self.params.apply_brd(payload)
+                    except (ValueError, TypeError, OSError) as exc:
+                        self._clear_imported_board(f"读取 BRD 失败: {exc}")
+                    else:
+                        self.brd_info = payload
+                        self._loaded_path = path
+                        self._loaded_signature = payload["_import_signature"]
+                        self._brd_error = ""
+                        self.result_var.set("BRD 已导入，确认逐层叠构和板厂能力后执行分析")
+                        self.status_var.set("BRD 已导入，确认逐层叠构和板厂能力后执行分析")
+                        self._refresh_component_coordinates()
                 else:
-                    self._set_brd_status(f"读取 BRD 失败: {payload}")
+                    self._clear_imported_board(f"读取 BRD 失败: {payload}")
+                self._tasks_changed(tuple(self.tasks.pending))
         except queue.Empty:
             pass
-        except Exception:  # noqa: BLE001  窗口已关闭
+        except tk.TclError:
             return
+        except Exception as exc:  # noqa: BLE001  读取回调出错也不能误放开分析/停止队列
+            self._clear_imported_board(f"读取 BRD 失败: {exc}")
         try:
             if self._alive:
                 self._poll_id = self.win.after(120, self._poll_brd_queue)
@@ -737,11 +1126,18 @@ class DFMDialog:
             pass
 
     def _close(self):
+        if self._loading or self.tasks.pending or self.impedance_panel.tasks.pending:
+            messagebox.showinfo("后台任务进行中", "请等待读取、分析或报告导出完成后再关闭，避免中断输出。", parent=self.win)
+            return
         if self._checklist_window and self._checklist_window.root.winfo_exists():
             if self._checklist_window.tasks.pending:
                 messagebox.showinfo("正在生成报告", "请等待 Checklist 报告生成完成后再关闭。", parent=self.win)
                 return
             self._checklist_window._close()
+        self.impedance_panel.tasks.close()
+        self._finish_close()
+
+    def _finish_close(self):
         self._alive = False
         self.tasks.close()
         self._cancel_poll()
@@ -779,6 +1175,13 @@ class DFMDialog:
 
     # ------------------------------------------------------------ 分析
     def _run(self):
+        if self._gerber_active():
+            self.gerber_panel.run()
+            return
+        if not self._require_imported_board():
+            return
+        if "pcb-analysis" in self.tasks.pending or "gerber-export" in self.tasks.pending:
+            return
         try:
             design = self._smt_design()
         except ValueError as exc:
@@ -789,6 +1192,9 @@ class DFMDialog:
             # 数据来源由 ParamPanel.read_design() 按字段给出 (_sources / _assumed)
             design["_warnings"] = self.brd_info.get("warnings", [])
             design.setdefault("_data_origin", "BRD+手工")
+        if not design.get("_brd_sha256"):
+            messagebox.showwarning("BRD 版本未验证", "缺少导入时的 BRD 内容哈希，请重新读取 BRD 后分析。", parent=self.win)
+            return
 
         revision = self._input_revision
         design = deepcopy(design)
@@ -798,33 +1204,27 @@ class DFMDialog:
         coordinate_dir = self.coordinate_dir.get().strip()
         design_unit = (self.brd_info or {}).get("units", "")
         gerber_dir = self.gerber_dir.get().strip()
+        geometry_data = self.geometry_data.get().strip()
+        odb_path = self.odb_path.get().strip()
+        odb_step = self.odb_step.get().strip() or None
         auto_gerber = self.auto_gerber.get()
         editor_path = self.editor_path.get()
+        auto_manufacturing = self.auto_manufacturing.get()
+        odb_exporter = self.odb_exporter.get().strip()
+
+        request = PCBAnalysisRequest(
+            brd_path=brd_path, design=deepcopy(design), **options, coordinate_dir=coordinate_dir,
+            design_unit=design_unit, gerber_dir=gerber_dir, geometry_data=geometry_data,
+            odb_path=odb_path, odb_step=odb_step, auto_gerber=auto_gerber,
+            auto_manufacturing=auto_manufacturing, editor_path=editor_path, odb_exporter=odb_exporter,
+            output_dir=self._pcb_output_dir())
 
         def compute():
-            from src.pcb_locations import attach_locations
-            result = analyze_design(design, **options)
-            result["analyzed_at"] = datetime.now().isoformat(timespec="seconds")
-            result["input_brd"] = brd_path
-            result = attach_locations(result, brd_path, design_unit=design_unit,
-                                      extra_dirs=[coordinate_dir] if coordinate_dir else [])
-            if (auto_gerber and brd_path) or gerber_dir:
-                from src.gerber_export import export_brd_gerbers
-                from src.gerber_analysis import analyze_gerbers, attach_gerber_result, write_preview
-                folder = gerber_dir
-                if auto_gerber and brd_path:
-                    bundle = export_brd_gerbers(brd_path,
-                        os.path.join(os.path.dirname(os.path.abspath(brd_path)), "Gerber_DFM"), editor_path)
-                    folder = bundle["directory"]
-                    result["gerber_export_warnings"] = bundle["warnings"]
-                geometry = analyze_gerbers(folder, options["factory"], options["board_type"], options["capability_level"],
-                                          copper_oz=design.get("copper_oz", 1.0))
-                result = attach_gerber_result(result, geometry, design_unit)
-                result["gerber_preview"] = write_preview(geometry, os.path.join(folder, "DFM_Gerber_preview.html"))
-            return result
+            return run_pcb_analysis(request, progress=lambda stage:
+                                    self._manufacturing_stage_queue.put((revision, stage)))
 
         def complete(result):
-            if revision != self._input_revision:
+            if revision != self._input_revision or self._brd_block_reason():
                 self._pcb_state = "idle"
                 self.status_var.set("PCB 分析期间输入已变化，已丢弃过期结果，请重新分析")
                 return
@@ -834,10 +1234,22 @@ class DFMDialog:
         def failed(error):
             if revision == self._input_revision:
                 self._pcb_state = "error"
-                messagebox.showerror("PCB 分析失败", error, parent=self.win)
+                self.status_var.set("PCB 分析失败：" + error)
+                self.result_var.set("PCB 分析失败：" + error)
+                from src.infrastructure.diagnostics import log_path
+                messagebox.showerror("PCB 分析失败", error + "\n\n诊断日志：" + str(log_path()), parent=self.win)
 
+        # A failed rerun must not leave an older analysis looking like its result.
+        self.last_result = None
+        self.last_design = {}
+        self.results.clear(clear_components=False)
+        self._pcb_state = "running"
         if self.tasks.submit("pcb-analysis", compute, complete, failed):
             self.status_var.set("正在后台执行 PCB 分析，界面可继续操作…")
+
+    def _pcb_output_dir(self):
+        from src.ui.paths import default_output_dir
+        return os.path.join(default_output_dir(), "PCB_Manufacturing")
 
     def _render_pcb(self, result, design):
         self.last_result = result
@@ -851,7 +1263,12 @@ class DFMDialog:
             pass
 
         coverage = result.get("coverage") or {}
-        verdict = "DFM PASS" if result["passed"] else "DFM FAIL"
+        # 唯一权威结论来自 verdict.finalize_verdict; 这里只做显示, 不再另行判定
+        from src.application.reports import VERDICT_LABELS
+        code = result.get("verdict_code") or (
+            "fail" if not result["passed"] else "pass" if result.get("releasable") else "review")
+        verdict = f"DFM {VERDICT_LABELS[code]}"
+        reasons = result.get("verdict_reasons") or []
         risk = result.get("risk", {})
         risk_txt = f" | 评分 {risk.get('score')}/100 ({risk.get('risk_level')})" if risk else ""
         name_txt = f"{design['board_name']} | " if design.get("board_name") else ""
@@ -864,8 +1281,10 @@ class DFMDialog:
         status = (f"{name_txt}{result['factory_label']} {result['board_type_label']} - "
                   f"{result['capability_label']} | "
                   f"{result.get('verdict', verdict)} (错误 {result['error_count']}, "
-                  f"警告 {result['warning_count']}, 覆盖 {coverage.get('ratio', 0):.0%}, "
+                   f"警告 {result['warning_count']}, 参数覆盖 {coverage.get('ratio', 0):.0%}, "
                   f"{src_txt}, 共 {len(result.get('issues', []))} 项问题){risk_txt}")
+        if reasons:
+            status += f" | 判定依据: {'；'.join(reasons)}"
         self.status_var.set(status)
 
         if not result.get("items"):
@@ -874,14 +1293,24 @@ class DFMDialog:
                 "左侧没有已确认的数值 —— BRD 没读到, 也没手动填。\n"
                 "请先「从 BRD 读取」, 或手工填入已知项 (填完即视为人工确认值)。")
 
+        geometry_txt = ("实际几何已执行，覆盖缺口见页签" if result.get("geometry_executed")
+                        else "未执行几何检查")
         self.results.result_var.set(
             f"{name_txt}{result['factory_label']} · {result['board_type_label']} · "
             f"{result['capability_label']}　|　{result.get('verdict', verdict)}"
-            f"　|　覆盖 {coverage.get('ratio', 0):.0%}"
+            f"　|　参数覆盖 {coverage.get('ratio', 0):.0%}；{geometry_txt}"
+            + (f"\n判定依据：{'；'.join(reasons)}" if reasons else "")
             )
 
     # ------------------------------------------------------------ 导出
     def _export(self, kind="pcb"):
+        if self._gerber_active():
+            if kind == "pcb":
+                self.gerber_panel.export(self.report_format.get(), self.hide_low_priority.get())
+            return
+        if not self._require_imported_board():
+            return
+        self.smt.check_source_changes()
         if kind == "pcb" and not self.output_pcb_report.get():
             return
         if "report-export" in self.tasks.pending:
@@ -900,18 +1329,36 @@ class DFMDialog:
                       "brd_path": self.brd_path.get().strip(), "submitter": "MPA-DFM",
                        "rule_set": "BRD 带入 + 已确认参数"}
         board_meta["hide_low_priority"] = self.hide_low_priority.get()
-        labels = {"dfm": "DFM综合报告", "pcb": "PCB报告", "smt": "SMT报告"}
-        path = filedialog.asksaveasfilename(
-            parent=self.win, title="导出 " + labels[kind],
-            defaultextension=self.report_format.get(),
-            initialfile=labels[kind] + self.report_format.get(),
-            filetypes=[("Excel 工作簿", "*.xlsx"), ("CSV 表格 (UTF-8)", "*.csv")],
-        )
+        # 文件名自动跟随 BRD 名: <板名>_PCB报告.xlsx 等; 用户仍可改名, 覆盖由对话框确认
+        initialfile, initialdir = default_report_name(board_meta["brd_path"], kind, self.report_format.get())
+        dialog_kwargs = dict(parent=self.win, title="导出 " + REPORT_LABELS[kind],
+                             defaultextension=self.report_format.get(), initialfile=initialfile,
+                             filetypes=[("Excel 工作簿", "*.xlsx"), ("CSV 表格 (UTF-8)", "*.csv")])
+        if initialdir:
+            dialog_kwargs["initialdir"] = initialdir
+        path = filedialog.asksaveasfilename(**dialog_kwargs)
         if not path:
             return
-        def done(paths):
-            messagebox.showinfo("导出完成", "\n".join(paths), parent=self.win)
+        revision = self._input_revision
+        expected_brd = board_meta["brd_path"]
+        pcb_sig = (pcb or {}).get("input_brd_sha256")
+        smt_sig = (smt or {}).get("input_brd_sha256")
+        if kind in ("pcb", "dfm") and not pcb_sig:
+            messagebox.showwarning("报告版本未验证", "PCB 结果缺少 BRD 内容哈希，请重新执行 PCB 分析。", parent=self.win)
+            return
+        if kind in ("smt", "dfm") and not smt_sig:
+            messagebox.showwarning("报告版本未验证", "SMT 结果缺少 BRD 内容哈希，请重新执行 SMT 分析。", parent=self.win)
+            return
 
-        self.tasks.submit("report-export",
-                          lambda: export_report(kind, path, pcb, smt, board_meta), done,
+        def generate():
+            return export_report(kind, path, pcb if kind in ("pcb", "dfm") else None,
+                                 smt if kind in ("smt", "dfm") else None, board_meta)
+
+        def done(paths):
+            changed = revision != self._input_revision or expected_brd != self.brd_path.get().strip()
+            message = ("导出期间界面输入已变化；下列文件是开始导出时的快照，不代表当前输入：\n"
+                       if changed else "") + "\n".join(paths)
+            messagebox.showinfo("导出完成", message, parent=self.win)
+
+        self.tasks.submit("report-export", generate, done,
                           lambda error: messagebox.showerror("导出失败", error, parent=self.win))

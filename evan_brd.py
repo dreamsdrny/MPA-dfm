@@ -145,6 +145,9 @@ def main():
     if sys.argv[1:]:
         raise SystemExit(run_cli(sys.argv[1:]))
 
+    from src.bootstrap import prepare_startup
+    prepare_startup()
+
     from gui import BRD_AIGUI
 
     threading.excepthook = lambda args: log_crash(

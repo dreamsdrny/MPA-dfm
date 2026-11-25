@@ -8,6 +8,7 @@ from tkinter import ttk
 
 from src.ui.theme import COLORS, Card, LogView
 from src.ui.widgets import field_row, labeled_combo, labeled_entry
+from src.ui.responsive import FlowBar
 
 
 def build_header(root, win):
@@ -28,7 +29,7 @@ def build_header(root, win):
     meta.pack(side=tk.RIGHT, padx=24, pady=10)
     tk.Label(meta, text="Evan 电子 · 内部工具", bg=COLORS["header"],
              fg=COLORS["header_text"], font=win._fonts["small"]).pack(anchor=tk.E)
-    tk.Label(meta, text="支持 .brd (Allegro 17.x) / Checklist / BOM",
+    tk.Label(meta, text="支持 BRD / Gerber / ODB++ / BOM",
              bg=COLORS["header"], fg=COLORS["header_muted"],
              font=win._fonts["small"]).pack(anchor=tk.E, pady=(2, 0))
     return header
@@ -54,28 +55,33 @@ def build_footer(root, win):
     bar.pack(fill=tk.X, side=tk.BOTTOM)
     inner = tk.Frame(bar, bg=COLORS["card"])
     inner.pack(fill=tk.X, pady=(1, 0))
-    box = ttk.Frame(inner, style="Card.TFrame", padding=(16, 10))
+    box = FlowBar(inner, style="Card.TFrame", padding=(16, 10))
     box.pack(fill=tk.X)
 
     win.run_btn = ttk.Button(box, text="填写 Checklist 报告",
                              style="Primary.TButton", command=win._run_checklist)
-    win.run_btn.pack(side=tk.LEFT)
+    box.add(win.run_btn)
 
     win.demo_btn = ttk.Button(box, text="演示运行", style="Secondary.TButton",
                               command=win._run_demo)
-    win.demo_btn.pack(side=tk.LEFT, padx=(10, 0))
+    box.add(win.demo_btn)
     win.analyze_btn = ttk.Button(box, text="BRD 分析与输出", style="Secondary.TButton",
                                  command=win._open_analyze)
-    win.analyze_btn.pack(side=tk.LEFT, padx=(10, 0))
+    box.add(win.analyze_btn)
+    win.trace_filter_btn = ttk.Button(box, text="PCB 线宽/线距筛选", style="Secondary.TButton",
+                                     command=win._open_trace_filter)
+    box.add(win.trace_filter_btn)
     win.store_btn = ttk.Button(box, text="BRD↔BOM 联动检查", style="Secondary.TButton",
                                command=win._open_store_check)
-    win.store_btn.pack(side=tk.LEFT, padx=(10, 0))
+    box.add(win.store_btn)
+    win.manufacturing_btn = ttk.Button(box, text="Gerber/ODB++ ↔ BOM", style="Secondary.TButton",
+                                       command=win._open_manufacturing)
+    box.add(win.manufacturing_btn)
     win.open_btn = ttk.Button(box, text="打开输出目录", style="Secondary.TButton",
                               command=win._open_output)
-    win.open_btn.pack(side=tk.LEFT, padx=(8, 0))
+    box.add(win.open_btn)
 
-    ttk.Label(box, text="输出: <程序目录>/output", style="CardHint.TLabel").pack(
-        side=tk.RIGHT)
+    box.add(ttk.Label(box, text="输出: <程序目录>/output", style="CardHint.TLabel"))
     return bar
 
 
@@ -118,8 +124,7 @@ def build_option_card(parent, win):
 
     row2 = ttk.Frame(c, style="Card.TFrame")
     row2.pack(fill=tk.X, pady=(12, 0))
-    labeled_entry(row2, "铜厚 (um)", win.copper_um, width=7)
-    labeled_entry(row2, "铜厚 (oz)", win.copper_oz, width=7)
+    labeled_entry(row2, "外层成品铜厚 (um)", win.copper_um, width=7)
 
     row3 = ttk.Frame(c, style="Card.TFrame")
     row3.pack(fill=tk.X, pady=(12, 0))

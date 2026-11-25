@@ -112,6 +112,12 @@ def main():
 
         with mock.patch("src.ui.store_dialog.messagebox.showinfo"):
             dlg._export()
+            import time
+            deadline = time.monotonic() + 10
+            while dlg.tasks.pending and time.monotonic() < deadline:
+                root.update()
+                time.sleep(.01)
+            check(not dlg.tasks.pending, "后台报告任务完成")
         exported = [name for name in os.listdir(out_dir) if name.startswith("BRD_BOM联动检查_")]
         check(len(exported) >= 4, f"导出报告落盘 {len(exported)} 个文件", str(exported))
 

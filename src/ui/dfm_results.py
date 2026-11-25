@@ -10,11 +10,13 @@ from tkinter import ttk
 from src.ui.theme import COLORS
 from src.ui.widgets import make_tree
 from src.ui.i18n import translate
+from src.ui.responsive import FlowBar, wrap_label
 
 
 class ResultPanel(ttk.Frame):
-    def __init__(self, master, on_locate=None, on_open_point=None, on_point_selected=None):
+    def __init__(self, master, on_locate=None, on_open_point=None, on_point_selected=None, gerber_mode=False):
         super().__init__(master, style="Card.TFrame")
+        self.gerber_mode = gerber_mode
         self._on_locate = on_locate
         self._render_id = None
         self._generation = 0
@@ -28,8 +30,9 @@ class ResultPanel(ttk.Frame):
         self.bind("<Destroy>", self._destroyed, add="+")
 
         self.result_var = tk.StringVar(value="尚未执行分析")
-        ttk.Label(self, textvariable=self.result_var, style="Card.TLabel",
-                  wraplength=640, justify=tk.LEFT).pack(fill=tk.X, pady=(0, 8))
+        summary=ttk.Label(self,textvariable=self.result_var,style="Card.TLabel",justify=tk.LEFT)
+        summary.pack(fill=tk.X,pady=(0,8))
+        wrap_label(summary,self)
 
         if on_locate is not None:
             bar = ttk.Frame(self, style="Card.TFrame")
@@ -58,16 +61,18 @@ class ResultPanel(ttk.Frame):
         self.tree.bind("<Double-1>", self._locate_capability)
         tab2 = ttk.Frame(self.nb, style="Card.TFrame", padding=6)
         self.nb.add(tab2, text="问题 X/Y 坐标")
-        bar = ttk.Frame(tab2, style="Card.TFrame")
+        bar = FlowBar(tab2, style="Card.TFrame")
         bar.pack(fill=tk.X, pady=(0, 6))
-        self.open_point_button = ttk.Button(bar, text="打开 BRD 定位", style="Primary.TButton",
+        self.open_point_button = ttk.Button(bar, text="Gerber 问题预览" if gerber_mode else "打开 BRD 定位", style="Primary.TButton",
                                             command=self._open_selected, state=tk.DISABLED)
-        self.open_point_button.pack(side=tk.LEFT)
-        ttk.Button(bar, text="上一个点", command=lambda: self._step(-1)).pack(side=tk.LEFT, padx=4)
-        ttk.Button(bar, text="下一个点", command=lambda: self._step(1)).pack(side=tk.LEFT)
-        ttk.Button(bar, text="复制坐标命令", command=self._copy_location).pack(side=tk.LEFT, padx=4)
-        ttk.Label(tab2, text="双击有坐标的问题点，在 Allegro 打开 BRD 并缩放到该点。",
-                  style="CardHint.TLabel").pack(anchor=tk.W, pady=(0, 6))
+        bar.add(self.open_point_button)
+        bar.add(ttk.Button(bar,text="上一个点",command=lambda:self._step(-1)))
+        bar.add(ttk.Button(bar,text="下一个点",command=lambda:self._step(1)))
+        self.copy_location_button = ttk.Button(bar,text="复制问题坐标" if gerber_mode else "复制坐标命令",command=self._copy_location)
+        bar.add(self.copy_location_button)
+        self.location_hint = ttk.Label(tab2, text="坐标为 Gerber 原点的毫米值；双击打开底片与编号问题预览。" if gerber_mode else "双击有坐标的问题点，在 Allegro 打开 BRD 并缩放到该点。",
+                   style="CardHint.TLabel")
+        self.location_hint.pack(anchor=tk.W, pady=(0, 6))
         self.location_tree = make_tree(tab2, (
             ("item", "检查项", 160, 100, "w"),
             ("x", "X(BRD)", 95, 70, "w"), ("y", "Y(BRD)", 95, 70, "w"),
@@ -77,17 +82,20 @@ class ResultPanel(ttk.Frame):
         ))
         self.location_tree.bind("<Double-1>", self._open_selected)
         self.location_tree.bind("<<TreeviewSelect>>", self._selection_changed)
+        if gerber_mode:
+            self.location_tree.heading("x", text="X(mm)")
+            self.location_tree.heading("y", text="Y(mm)")
         tab3 = ttk.Frame(self.nb, style="Card.TFrame", padding=6)
         self.nb.add(tab3, text="BRD 器件 X/Y")
-        bar = ttk.Frame(tab3, style="Card.TFrame")
+        bar = FlowBar(tab3, style="Card.TFrame")
         bar.pack(fill=tk.X, pady=(0, 6))
-        ttk.Label(bar, text="位号筛选：", style="Card.TLabel").pack(side=tk.LEFT)
+        bar.add(ttk.Label(bar,text="位号筛选：",style="Card.TLabel"))
         self.component_filter = tk.StringVar()
-        ttk.Entry(bar, textvariable=self.component_filter, width=16).pack(side=tk.LEFT)
+        bar.add(ttk.Entry(bar,textvariable=self.component_filter,width=16))
         self.open_component_button = ttk.Button(bar, text="定位器件", command=self._open_component,
                                                 state=tk.DISABLED)
-        self.open_component_button.pack(side=tk.LEFT, padx=6)
-        ttk.Button(bar, text="复制 X/Y", command=self._copy_component).pack(side=tk.LEFT)
+        bar.add(self.open_component_button)
+        bar.add(ttk.Button(bar,text="复制 X/Y",command=self._copy_component))
         self.component_var = tk.StringVar(value="尚未提取器件坐标；点「打开 BRD」自动提取")
         ttk.Label(tab3, textvariable=self.component_var, style="CardHint.TLabel",
                   wraplength=650).pack(fill=tk.X, pady=(0, 6))
@@ -101,6 +109,32 @@ class ResultPanel(ttk.Frame):
         self.component_tree.bind("<Double-1>", self._open_component)
         self.component_tree.bind("<<TreeviewSelect>>", self._component_selected)
         self.component_filter.trace_add("write", lambda *_: self._render_components())
+        geometry_tab = ttk.Frame(self.nb, style="Card.TFrame", padding=6)
+        self.nb.add(geometry_tab, text="几何覆盖与缺数据")
+        self.geometry_var = tk.StringVar(value="尚未执行实际几何检查")
+        ttk.Label(geometry_tab, textvariable=self.geometry_var, style="CardHint.TLabel",
+                  wraplength=650).pack(fill=tk.X, pady=(0, 6))
+        self.geometry_tree = make_tree(geometry_tab, (
+            ("rule", "规则", 200, 120, "w"), ("layer", "图层", 110, 70, "w"),
+            ("status", "覆盖状态", 100, 70, "w"), ("need", "所需资料 / 能力", 380, 180, "w"),
+            ("note", "范围 / 未完成原因", 380, 180, "w")))
+        if gerber_mode:
+            self.nb.hide(tab3)
+
+    def set_input_mode(self, gerber_mode):
+        if self.gerber_mode == gerber_mode:
+            return
+        self.gerber_mode = gerber_mode
+        self.open_point_button.configure(text="Gerber 问题预览" if gerber_mode else "打开 BRD 定位")
+        self.copy_location_button.configure(text="复制问题坐标" if gerber_mode else "复制坐标命令")
+        for key, label in (("x", "X"), ("y", "Y")):
+            self.location_tree.heading(key, text=label + ("(mm)" if gerber_mode else "(BRD)"))
+        self.location_hint.configure(text="Gerber 原点毫米坐标；双击打开问题预览。" if gerber_mode else
+                                     "BRD 定位仅使用已验证对齐的坐标；未对齐时查看 Gerber 预览。")
+        if gerber_mode:
+            self.nb.hide(2)
+        else:
+            self.nb.add(self.nb.tabs()[2])
 
     def show_components(self, coordinates, note=""):
         self._components = list(coordinates)
@@ -218,7 +252,8 @@ class ResultPanel(ttk.Frame):
         row = self.selected_point()
         if row is None:
             return
-        text = row.get("command") or row.get("note", "")
+        text = (f"X(mm)={row.get('x_mm')} Y(mm)={row.get('y_mm')} Layer={row.get('layer', '')}"
+                if self.gerber_mode else row.get("command") or row.get("note", ""))
         self.clipboard_clear()
         self.clipboard_append(text)
         self.result_var.set("已复制：" + text)
@@ -241,6 +276,8 @@ class ResultPanel(ttk.Frame):
             self._render_id = None
         self.tree.delete(*self.tree.get_children())
         self.location_tree.delete(*self.location_tree.get_children())
+        self.geometry_tree.delete(*self.geometry_tree.get_children())
+        self.geometry_var.set("尚未执行实际几何检查")
         self._locations = []
         self._items = []
         self.open_point_button.configure(state=tk.DISABLED)
@@ -252,6 +289,12 @@ class ResultPanel(ttk.Frame):
         self.clear(clear_components=False)
         self.show_components(result.get("component_coordinates", []))
         generation = self._generation
+        geometry_rows = result.get("geometry_coverage", [])
+        if result.get("geometry_executed"):
+            summary = result.get("geometry_coverage_summary", {})
+            self.geometry_var.set(f"实际几何已执行 · 已测量 {summary.get('measured', 0)} / "
+                                  f"部分覆盖 {summary.get('partial', 0)} / 缺数据 {summary.get('missing', 0)} / "
+                                  f"未完成 {summary.get('incomplete', 0)}；不等于完整 DFM 放行")
         rows = []
 
         icon = {"pass": "PASS", "warn_limit": "WARN", "fail": "FAIL", "info": "INFO"}
@@ -259,6 +302,8 @@ class ResultPanel(ttk.Frame):
             msg = it["message"]
             if it.get("note"):
                 msg += f"  [{it['note']}]"
+            if it.get("source_detail"):
+                msg += f"  (证据出处: {it['source_detail']})"
             rows.append(((icon[it["status"]], it.get("source", "手工"),
                           it["category"], msg), it["status"]))
             from src.ui import i18n
@@ -274,6 +319,8 @@ class ResultPanel(ttk.Frame):
             rows.append(((
                 "INFO", "—", "覆盖率",
                 f"缺数据未参与判定: {'、'.join(coverage['missing_items'])}"), "info"))
+        for reason in result.get("verdict_reasons") or []:
+            rows.append((("INFO", "判定", "判定依据", reason), "info"))
 
         assumed = result.get("assumed_fields") or []
         brd_count = result.get("brd_item_count") or 0
@@ -282,10 +329,13 @@ class ResultPanel(ttk.Frame):
                 "INFO", "—", "未确认",
                 f"表单里的示例值未确认, 已跳过判定: {'、'.join(assumed[:12])}"
                 + (" 等" if len(assumed) > 12 else "")), "info"))
-        rows.append(((
-            "INFO", "BRD", "数据来源",
-            f"本次判定中有 {brd_count} 项用到了 .brd 里读到的值; 其余为人工确认值"
-            if brd_count else "本次判定全部使用人工值, 未用到 BRD 数据"), "info"))
+        if self.gerber_mode:
+            rows.append((("INFO", "Gerber", "数据来源", "直接读取 Gerber / NC Drill 几何；无 BRD 数据，不生成 Allegro 跳转命令。"), "info"))
+        else:
+            rows.append(((
+                "INFO", "BRD", "数据来源",
+                f"本次判定中有 {brd_count} 项用到了 .brd 里读到的值; 其余为人工确认值"
+                if brd_count else "本次判定全部使用人工值, 未用到 BRD 数据"), "info"))
         self._locations = result.get("problem_locations", [])
         self._items = result["items"]
         position_checks = result.get("position_checks", [])
@@ -319,7 +369,10 @@ class ResultPanel(ttk.Frame):
                     translate(point["item"]), point.get("x_brd", ""), point.get("y_brd", ""),
                     point.get("brd_unit", ""), point.get("net") or point.get("padstack", ""),
                     point.get("layer", ""),
-                    translate(point.get("location_status", "") + "；" + point.get("note", ""))))
-            if start + 100 < max(len(rows), len(self._locations)):
+                     translate(point.get("location_status", "") + "；" + point.get("note", ""))))
+            for row in geometry_rows[start:start + 100]:
+                self.geometry_tree.insert("", tk.END, values=tuple(row.get(k, "") for k in
+                    ("rule", "layer", "status", "required_data", "note")))
+            if start + 100 < max(len(rows), len(self._locations), len(geometry_rows)):
                 self._render_id = self.after(1, lambda: batch(start + 100))
         batch()

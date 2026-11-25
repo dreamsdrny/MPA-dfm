@@ -28,6 +28,18 @@ Desktop.ini
 *.dmp
 ~$*
 
+# Test / linter caches
+.pytest_cache/
+.ruff_cache/
+
+# Delivery packages, evidence and local licenses
+delivery/
+*.zip
+license.json
+expired_license.json
+revocations.json
+config/integrity_manifest.json
+
 # output: only auto_constraint.il is tracked
 output/*
 !output/auto_constraint.il
@@ -54,3 +66,10 @@ PPT/
 Pcb-manufacture/
 config/dfm_capability_hongban.yaml
 config/dfm_capability_sihui.yaml
+
+# Proprietary supplier capabilities and internal design baselines.
+# Keep these on your own machine; only *.example files are published.
+config/internal/application.yaml
+config/internal/pcb/
+config/internal/smt/
+config/suppliers/

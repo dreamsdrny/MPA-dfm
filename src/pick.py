@@ -76,6 +76,7 @@ def parse_skill_csv(path: str) -> Dict[str, object]:
     """
     unit, dbu, header = "millimeters", 1000.0, []
     rows: List[dict] = []
+    unit_declared = False
     try:
         with open(path, "r", encoding="utf-8-sig", newline="") as f:
             for raw in f:
@@ -86,6 +87,7 @@ def parse_skill_csv(path: str) -> Dict[str, object]:
                     parts = [p.strip() for p in line.split(",")]
                     if len(parts) >= 2 and parts[1]:
                         unit = parts[1]
+                        unit_declared = True
                     if len(parts) >= 4:
                         try:
                             dbu = float(parts[3])
@@ -102,6 +104,8 @@ def parse_skill_csv(path: str) -> Dict[str, object]:
 
     if not rows:
         return {"ok": False, "error": f"{os.path.basename(path)} 里没有数据行"}
+    if not unit_declared:
+        return {"ok": False, "error": f"{os.path.basename(path)} 缺少 UNITS 单位声明，不能猜测坐标单位"}
 
     # 焊盘外框优先判定: 它同时带 PADSTACK 和 W_DBU/H_DBU, 不能当孔位读
     is_pads = ("W_DBU" in header and "H_DBU" in header) or ("W_UU" in header and "H_UU" in header)
@@ -141,6 +145,7 @@ def parse_skill_csv(path: str) -> Dict[str, object]:
                 "kind": "PIN",
             })
         elif is_holes:
+            from src.pcb_hole_types import classify_hole
             try:
                 drill = _to_mm(float(r.get("DRILL_UU", "")), unit, dbu)
             except (ValueError, TypeError):
@@ -151,9 +156,25 @@ def parse_skill_csv(path: str) -> Dict[str, object]:
                 "drill_mm": drill if drill and drill > 0 else None,
                 "drill_source": "Allegro padstack drillDiameter" if drill else "",
                 "is_through": {"YES": True, "NO": False}.get(r.get("IS_THROUGH", "").upper()),
-                "kind": r.get("KIND", "VIA") or "VIA",
+                "kind": r.get("KIND", ""),
                 "refdes": r.get("REFDES", ""),
             })
+            # Legacy Evan exports wrote generic VIA/PIN and defaulted failed
+            # isThrough reads to NO. Only an explicit Cadence type or the new
+            # schema's valid isThrough value can disambiguate those rows.
+            typed_schema = "HOLE_TYPE" in header
+            explicit_type = (r.get("HOLE_TYPE", "") or entry["kind"]) if typed_schema else entry["kind"]
+            generic = str(entry["kind"]).strip().upper() in ("VIA", "PIN")
+            through_flag = entry["is_through"]
+            if generic:
+                # Historical exporter queried isThrough on via/pin rather than
+                # padstack; nil can also mean missing attribute, not false.
+                through_flag = None
+                explicit_type = ""
+            classified = classify_hole(name=entry["padstack"], cadence_type=explicit_type,
+                                       is_through=through_flag)
+            entry["hole_kind"] = classified["kind"]
+            entry["hole_kind_reason"] = classified["reason"]
         else:
             entry.update({
                 "refdes": r.get("REFDES", ""),
@@ -469,10 +490,9 @@ def build_inventory(brd_path: str, files: Optional[Iterable[str]] = None,
                 h["drill_source"] = h.get("drill_source") or "钻孔文件刀具表"
             parsed = parse_via_name(h.get("padstack") or "")
             if parsed and parsed.get("drill_mil"):
-                if not h.get("drill_mm"):
-                    h["drill_mm"] = round(parsed["drill_mil"] * MM_PER_MIL, 4)
-                h["pad_mm"] = round(parsed["pad_mil"] * MM_PER_MIL, 4)
-                h["drill_source"] = h.get("drill_source") or "焊盘栈名"
+                h["name_drill_hint_mm"] = round(parsed["drill_mil"] * MM_PER_MIL, 4)
+                h["name_pad_hint_mm"] = round(parsed["pad_mil"] * MM_PER_MIL, 4)
+                h["dimension_warning"] = "焊盘栈名称尺寸仅为提示；需实际 Padstack 数据才能定位孔环"
                 h["span"] = parsed.get("span")
             else:
                 h["drill_source"] = h.get("drill_source") or ""
@@ -507,6 +527,13 @@ def locate_failures(result: dict, inventory: dict, limit: Optional[int] = None) 
     其它项 (线宽/孔环/阻焊...) 需要图形几何, 这里如实标注"需 CAM/图纸"。
     """
     holes = inventory.get("holes") or []
+    from src.pcb_hole_types import classify_hole
+
+    def hole_kind(hole):
+        return hole.get("hole_kind") or classify_hole(
+            name=hole.get("padstack", ""), cadence_type=hole.get("kind", ""),
+            is_through=hole.get("is_through"))["kind"]
+
     out: List[dict] = []
     for it in (result or {}).get("items") or []:
         if it.get("status") not in ("fail", "warn_limit"):
@@ -524,7 +551,8 @@ def locate_failures(result: dict, inventory: dict, limit: Optional[int] = None) 
             cap = it.get("capability")
             sized = [h for h in holes if h.get("pad_mm") and h.get("drill_mm")]
             if field == "min_annular_ring":
-                sized = [h for h in sized if not h.get("span") and h.get("is_through") is not False]
+                sized = [h for h in sized if hole_kind(h) == "through"
+                         and h.get("technology") == "mechanical"]
             elif field == "min_annular_ring_laser":
                 sized = [h for h in sized if h.get("technology") == "laser"]
             matched = [h for h in sized
@@ -538,15 +566,15 @@ def locate_failures(result: dict, inventory: dict, limit: Optional[int] = None) 
                               for h in matched[:limit]]
             row["located"] = bool(sized)
             if not sized:
-                row["note"] = "有孔位但焊盘直径未知 (焊盘栈名无法解析), 不能判断孔环"
+                row["note"] = "有孔位，但实际焊盘/孔径、孔型或机械/激光工艺未确认，不能定位对应孔环"
             else:
                 row["note"] = (f"单边孔环 < {cap}mm 的孔; 可算孔环的孔共 {len(sized)} 个")
         elif field in _DRILL_FIELDS and holes:
             cap = it.get("capability")
             design = it.get("design")
-            known = [h for h in holes if h.get("drill_mm")]
+            known = [h for h in holes if h.get("drill_mm") and h.get("hole_kind") != "unknown"]
             if field in ("min_mech_drill", "max_mech_drill"):
-                known = [h for h in known if not h.get("span") and h.get("is_through") is not False]
+                known = [h for h in known if hole_kind(h) == "through"]
             elif field == "min_laser_via":
                 # Size or padstack spelling alone cannot prove laser technology.
                 known = [h for h in known if h.get("technology") == "laser"]
@@ -576,7 +604,7 @@ def locate_failures(result: dict, inventory: dict, limit: Optional[int] = None) 
                 matched = []
                 row["note"] = "设计值缺失, 无法匹配"
             if unknown:
-                row["note"] += f"; 另有 {unknown} 个孔孔径未解析 (焊盘栈名无法换算)"
+                row["note"] += f"; 另有 {unknown} 个孔不属于该孔型或孔径/工艺未确认，未参与定位"
             row["count"] = len(matched) if known else None
             row["coords"] = [{"x_mm": round(h["x_mm"], 6), "y_mm": round(h["y_mm"], 6),
                               "drill_mm": h.get("drill_mm"),
@@ -747,7 +775,8 @@ def write_report(out_dir: str, base_name: str, result: dict, inventory: dict,
     csv_path = os.path.join(out_dir, f"{base_name}.csv")
     try:
         with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
-            w = csv.writer(f)
+            from src.csv_safety import SafeCSVWriter
+            w = SafeCSVWriter(f)
             w.writerow(["类别", "检查项", "结论", "设计值", "能力值", "孔数", "坐标数", "说明"])
             for row in located:
                 w.writerow([row["category"], row["item"],

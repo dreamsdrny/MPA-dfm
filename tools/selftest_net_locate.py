@@ -33,12 +33,12 @@ def check(label, cond, detail=""):
         print(f"  [FAIL] {label}  {detail}")
 
 
-NET_XML = ('<?xml version="1.0" encoding="utf-8"?><net>'
+NET_XML = ('<?xml version="1.0" encoding="utf-8"?><root>'
            '<o N="MIPI_D0_P"/><o N="MIPI_D0_N"/>'
            '<o N="MIPI_CLK_P"/><o N="MIPI_CLK_N"/>'
-           '<o N="MIPI"/><o N="MIPN"/><o N="GND"/></net>')
-DIFF_XML = ('<?xml version="1.0" encoding="utf-8"?><diffpair>'
-            '<o N="MIPI_D0"/><o N="MIPI_CLK"/></diffpair>')
+           '<o N="MIPI"/><o N="MIPN"/><o N="GND"/></root>')
+DIFF_XML = ('<?xml version="1.0" encoding="utf-8"?><root>'
+            '<o N="MIPI_D0"/><o N="MIPI_CLK"/></root>')
 
 PADS = """UNITS,millimeters,3,1000
 KIND,PADSTACK,X_DBU,Y_DBU,W_DBU,H_DBU,SIDE,NET,REFDES,PIN
@@ -85,11 +85,11 @@ def _write(path, text):
 def _mini_brd(folder, with_net=True):
     path = os.path.join(folder, "MINI.brd")
     with zipfile.ZipFile(path, "w") as z:
+        z.writestr("Header.xml", '<?xml version="1.0"?><root/>')
+        z.writestr("objects/Design.xml", '<?xml version="1.0"?><root><o N="MINI"/></root>')
         if with_net:
             z.writestr("objects/Net.xml", NET_XML)
             z.writestr("objects/DiffPair.xml", DIFF_XML)
-        else:
-            z.writestr("Header.xml", '<?xml version="1.0"?><root/>')
     return path
 
 

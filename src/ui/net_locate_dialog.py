@@ -17,11 +17,11 @@
 import os
 import queue
 import re
-import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from src import net_locate
+from src.application import net_locate
+from src.ui.tasks import TaskRunner
 from src.ui.theme import COLORS, Card, apply_theme, fonts
 
 # 走线/引脚配色 (按层名稳定分配)
@@ -96,7 +96,8 @@ class NetLocateDialog:
         self._layer_colors = {}
 
         self._build()
-        self._start_poll()
+        self.tasks = TaskRunner(self.win)
+        self._load_revision = 0
         if self.brd_path:
             self._start_load()
         else:
@@ -294,8 +295,12 @@ class NetLocateDialog:
         _clear_tree(self.tree)
         _clear_tree(self.items_tree)
         self.count_var.set("")
-        threading.Thread(target=self._load_worker,
-                         args=(self.brd_path, tuple(self.files)), daemon=True).start()
+        self._load_revision += 1
+        revision, brd, files = self._load_revision, self.brd_path, tuple(self.files)
+        def done(inv):
+            if revision == self._load_revision and brd == self.brd_path and files == tuple(self.files):
+                self._loaded(inv)
+        self.tasks.submit("net-import", lambda: net_locate.load_net_inventory(brd, files=files), done, self._failed)
 
     def _load_worker(self, brd_path, files):
         try:
@@ -661,7 +666,7 @@ class NetLocateDialog:
         self._start_load()
 
     def _gen_skill(self):
-        from src.allegro_skill import write_bundle
+        from src.application.cad_tools import write_bundle
 
         target = os.path.join(self.out_dir, "allegro_bridge")
         try:
@@ -699,12 +704,9 @@ class NetLocateDialog:
             filetypes=[("CSV", "*.csv"), ("所有文件", "*.*")], parent=self.win)
         if not path:
             return
-        try:
-            net_locate.export_net_csv(net, path)
-        except Exception as exc:  # noqa: BLE001
-            messagebox.showerror("导出失败", str(exc), parent=self.win)
-            return
-        messagebox.showinfo("导出完成", f"已导出:\n{path}", parent=self.win)
+        self.tasks.submit("net-report", lambda: net_locate.export_net_csv(net, path),
+                          lambda _: messagebox.showinfo("导出完成", f"已导出:\n{path}", parent=self.win),
+                          lambda error: messagebox.showerror("导出失败", error, parent=self.win))
 
     # ------------------------------------------------------------ 生命周期
     def _on_destroy(self, event=None):

@@ -15,7 +15,8 @@ class GerberDFMTests(unittest.TestCase):
             p = Path(folder)
             (p/"test.gto").write_text(HEADER + "X1000000Y1000000D02*\nX2000000Y1000000D01*\nM02*\n")
             (p/"test.gts").write_text(HEADER.replace("0.1", "0.5") + "X1500000Y1000000D03*\nM02*\n")
-            (p/"test.gko").write_text(HEADER + "X0Y1000000D02*\nX5000000Y1000000D01*\nM02*\n")
+            (p/"test.gko").write_text(HEADER + "X0Y1000000D02*\nX5000000Y1000000D01*\n"
+                                    "X5000000Y5000000D01*\nX0Y5000000D01*\nX0Y1000000D01*\nM02*\n")
             bundle = analyze_gerbers(folder)
             fields = {c["field"] for c in bundle["checks"]}
             self.assertIn("gerber_silk_width", fields)
@@ -27,7 +28,7 @@ class GerberDFMTests(unittest.TestCase):
             self.assertFalse(result["releasable"])
             self.assertNotIn("command", result["problem_locations"][-1])
             preview = write_preview(bundle, p/"preview.html")
-            self.assertIn("<svg", Path(preview).read_text())
+            self.assertIn("<svg", Path(preview).read_text(encoding="utf-8"))
 
     def test_clear_polarity_subtracts_opening(self):
         with tempfile.TemporaryDirectory() as folder:

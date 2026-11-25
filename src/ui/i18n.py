@@ -5,10 +5,65 @@ from tkinter import ttk
 
 LANGUAGE = "zh"
 TRANSLATIONS = {
+    "Gerber 报告": "Gerber report",
+    "导入 Gerber 文件 / 压缩包": "Import Gerber file / archive",
+    "导入 Gerber 目录": "Import Gerber folder", "执行 Gerber 分析": "Run Gerber analysis",
+    "高级 BRD / CAD 设置": "Advanced BRD / CAD settings", "导入 BRD（高级）": "Import BRD (advanced)",
+    "Gerber · 独立制造分析": "Gerber · standalone manufacturing analysis", "高级 · BRD 制造分析": "Advanced · BRD analysis",
+    "① 导入 Gerber  →  ② 确认板厂能力 / 铜厚 / 叠构  →  ③ 分析、预览问题并导出报告":
+        "1. Import Gerber → 2. Confirm supplier / copper / stackup → 3. Analyze, preview and export reports",
+    "① Gerber 输入与能力设置": "1. Gerber input and capabilities",
+    "② 分析结果 / 问题坐标 / 覆盖缺口": "2. Results / coordinates / missing data",
+    "导入图层清单": "Imported layers", "读取路径": "Read path", "板型": "Board type",
+    "外层铜厚 μm": "Outer copper um", "实际铜层数": "Actual copper layers", "图形数": "Features",
+    "图层角色": "Layer role", "范围 mm": "Bounds mm", "文件": "File",
+    "导入逐层叠构 JSON": "Import layer stackup JSON", "选择几何配置 JSON": "Select geometry JSON",
+    "复制问题坐标": "Copy issue coordinates", "等待导入 Gerber": "Waiting for Gerber import",
+    "Gerber 分析完成": "Gerber analysis complete", "Gerber 操作失败": "Gerber operation failed",
+    "Gerber 工作台 · 请导入文件 / 整套目录 / 压缩包（无需 BRD）": "Gerber workbench · import file / folder / archive (no BRD needed)",
+    "Gerber 已导入 · 可执行独立分析": "Gerber imported · standalone analysis available",
+    "导入 BRD":"Import BRD", "BRD 与设计参数":"BRD and design inputs",
+    "先读取 BRD，再确认叠构及人工补充项":"Read BRD first, then confirm stackup and supplemental inputs",
+    "请先导入 BRD 文件，成功读取后才能分析":"Import and successfully read a BRD file before analysis",
+    "未导入 BRD · 分析已禁用":"No BRD imported · Analysis disabled",
+    "分析已禁用":"Analysis disabled", "等待导入 BRD":"Waiting for BRD import",
+    "BRD 未就绪":"BRD not ready", "BRD 正在读取，请等待完成":"Reading BRD, please wait",
+    "BRD 尚未成功读取，请点击「从 BRD 读取」":"BRD not loaded. Click Read BRD first",
+    "BRD 文件已变化，请重新点击「从 BRD 读取」":"BRD file changed. Click Read BRD again",
+    "BRD 已导入":"BRD imported", "可执行分析":"Analysis enabled",
+    "① 导入并读取 BRD  →  ② 确认逐层叠构 / Gerber / 板厂能力  →  ③ 执行分析并导出报告":
+        "1. Import BRD  →  2. Confirm layer stackup / Gerber / supplier capabilities  →  3. Analyze and export reports",
+    "外层成品铜厚 (um)":"Outer finished copper (um)",
+    "导入逐层叠构 JSON（铜厚/线宽/线距）":"Import layer stackup JSON (copper / width / spacing)",
+    "铜层":"Copper layer", "铜厚 μm":"Copper um", "检查范围":"Check scope", "待补":"Missing",
+    "线宽/线距 + 阻焊":"Width / spacing + mask", "线宽/线距":"Width / spacing",
+    "逐层叠构待补充":"Layer stackup required",
+    "全部铜层按各层叠构铜厚检查；阻焊仅顶/底层。内层铜厚未给则待确认，不套用外层。":
+        "Use each copper layer's stackup thickness. Mask checks apply only to top/bottom. Missing inner copper stays unverified.",
+    "BRD 已导入，确认逐层叠构和板厂能力后执行分析":"BRD imported. Confirm stackup and supplier capabilities before analysis",
+    "请导入 SMT 厂商 YAML，确认工艺输入后分析":"Import supplier SMT YAML and confirm process inputs before analysis",
+    "BRD 已导入 · SMT 能力配置已加载":"BRD imported · SMT capabilities loaded",
+    "尚未导入 BRD\n\n请先点击「导入 BRD」或「浏览」，选择 .brd 并等待读取完成。\n成功导入后显示板厂、逐层铜厚和设计参数；PCB / SMT 分析才可使用。\n\nGerber、叠构及坐标文件仅作当前 BRD 的补充资料，不能替代 BRD 导入。":
+        "No BRD imported\n\nClick Import BRD or Browse, select a .brd file, and wait for reading to finish.\nDesign inputs and PCB / SMT analysis are enabled only after successful import.\n\nGerber, stackup and coordinate files supplement the current BRD; they do not replace it.",
     "执行 PCB 分析":"Run PCB analysis", "打开 BRD":"Open BRD", "关闭":"Close",
     "网络定位":"Net location", "报告导出":"Export reports", "DFM 综合报告":"DFM report",
+    "PCB 线宽/线距筛选":"PCB trace width / spacing filter",
+    "阻抗 / 走线原生高亮":"Native impedance / trace highlight",
+    "Allegro 阻抗 / 走线高亮":"Allegro impedance / trace highlight",
     "PCB 报告":"PCB report", "SMT 报告":"SMT report", "报告隐藏低优先级":"Hide low-priority report items",
     "需要独立 PCB 报告":"Enable separate PCB report", "执行分析时后台导出 Gerber":"Export Gerber in background on analysis",
+    "每次从 BRD 重新导出 Gerber":"Re-export Gerber from BRD on every run",
+    "实际几何检查始终执行；无已有 Gerber 时自动导出":"Geometry checks always run; export automatically if no Gerber is selected",
+    "补充几何资料 JSON":"PCB geometry data JSON",
+    "生成补充资料模板":"Create geometry data template",
+    "对象 DFM（可选，同版 ODB++）":"Object DFM (optional, same-revision ODB++)",
+    "选择 ODB++ 对象资料":"Select ODB++ object data",
+    "逐焊盘/过孔/阻焊/锡膏；未验证 BRD 对齐不跳转":"Pad / via / mask / paste checks; no BRD cross-probe without verified alignment",
+    "执行 ODB++ 对象 DFM":"Run ODB++ object DFM",
+    "BRD 一键导出并分析 Gerber / NC Drill / NC Route / ODB++":"BRD one-click export and analysis: Gerber / NC Drill / NC Route / ODB++",
+    "设置 ODB++ 导出器":"Set ODB++ exporter",
+    "ODB++ 问题预览":"ODB++ issue preview",
+    "几何覆盖与缺数据":"Geometry coverage / missing data",
     "选择已有 Gerber":"Select Gerber folder", "导出 Gerber":"Export Gerber", "Gerber 问题预览":"Gerber issue preview",
     "问题坐标来源":"Coordinate source", "选择导出目录":"Select export folder", "导入 COMP_XY":"Import COMP_XY",
     "生成 Allegro 坐标脚本":"Generate coordinate scripts", "设置 PCB Editor":"Set PCB Editor",
@@ -60,6 +115,7 @@ TRANSLATIONS = {
     "选择同一版本的一套 Gerber 目录":"Select one Gerber set for the same board revision",
     "坐标原点":"Coordinate origin", "该 Gerber 未确认与 BRD 原点一致，请使用 Gerber 问题预览查看位置。":"Gerber origin is not confirmed against BRD. Use Gerber issue preview.",
     "导出":"Export", "工艺实测":"Process measurement", "设计/已确认":"Confirmed design",
+    "Excel 报表预览":"Excel report preview",
 }
 
 
@@ -69,7 +125,7 @@ def translate(text):
     if text in TRANSLATIONS:
         return TRANSLATIONS[text]
     # A stable field ID is used for technical inputs without guessing domain wording.
-    from src.dfm_inputs import DFM_FIELDS
+    from src.application.pcb_inputs import DFM_FIELDS
     for _category, key, label, _default in DFM_FIELDS:
         if text == label:
             unit = re.search(r"\([^)]*\)", label)
