@@ -145,8 +145,9 @@ Remove-Item config\integrity_manifest.json, license.json -ErrorAction SilentlyCo
 
 这些文件是生产数据，**不要提交到公开仓库**。首次使用可从历史交付包、板厂采集表或内部配置库获取，并确认修订日期与适用产线。缺失时：
 
+- **GUI 无法创建**：参数面板构造时就要读取默认板厂（hongban）能力库，缺少 `config/suppliers/pcb/pcb_capability_hongban.yaml` 会直接报文件不存在，而不是仅影响某次分析；
 - PCB 参数比对无法加载对应板厂能力库；
-- SMT 相关测试会自动跳过（不会伪装成通过）；
+- SMT 与 GUI 相关测试会自动跳过（不会伪装成通过）；
 - `config/internal/application.yaml` 缺失时使用内置默认值 `max_workers=4`、`max_pending=16`。
 
 ### 5.2 运行配置

@@ -15,6 +15,10 @@ class WorkbenchUI(unittest.TestCase):
     def setUp(self):
         import tkinter as tk
         from src.ui.dfm_dialog import DFMDialog
+        capability = (Path(__file__).resolve().parents[1] / "config" / "suppliers"
+                      / "pcb" / "pcb_capability_hongban.yaml")
+        if not capability.is_file():
+            self.skipTest("本地板厂能力配置缺失: config/suppliers/pcb/pcb_capability_hongban.yaml")
         try:
             self.root = tk.Tk()
         except tk.TclError as exc:

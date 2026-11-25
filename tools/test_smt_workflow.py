@@ -144,6 +144,11 @@ def test_all_numeric_pass_does_not_certify_manual_conditions(profiles):
 
 def test_builtin_ui_startup_and_analysis():
     from tools.test_workbench_ui import WorkbenchUI
+    required = (ROOT / "config/suppliers/pcb/pcb_capability_hongban.yaml",
+                ROOT / "config/suppliers/smt/smt_capability_lijing.yaml")
+    missing = [str(path.relative_to(ROOT)) for path in required if not path.is_file()]
+    if missing:
+        pytest.skip("本地配置缺失: " + ", ".join(missing))
     test = WorkbenchUI()
     test.setUp()
     try:
