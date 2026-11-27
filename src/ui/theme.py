@@ -244,7 +244,13 @@ def apply_theme(root) -> ttk.Style:
     style.configure("Ghost.TButton", background=card, foreground=muted,
                     font=f["small"], padding=(10, 5), borderwidth=0, relief="flat")
     style.map("Ghost.TButton",
-              background=[("active", COLORS["row_alt"])],
+               background=[("active", COLORS["row_alt"])],
+               foreground=[("active", COLORS["primary_dark"])])
+
+    style.configure("TMenubutton", background=card, foreground=text,
+                    font=f["ui"], padding=(12, 7), borderwidth=1,
+                    relief="solid", bordercolor=border, arrowcolor=muted)
+    style.map("TMenubutton", background=[("active", COLORS["primary_soft"])],
               foreground=[("active", COLORS["primary_dark"])])
 
     # ---- 输入控件 ----

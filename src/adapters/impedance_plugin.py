@@ -52,7 +52,7 @@ def write_plugin(folder):
         f'skill imp_setup("<本目录>" "{token}")\nIMP_HIGHLIGHT\n'
         "仅有许可的 PCB Editor；Free Viewer 不等于可用 SKILL/Constraint Manager。\n"
         "选择真实铜层、模式、线宽/间距（mil）、调色板色块；保持原生面板打开查看临时高亮。\n"
-        "Close 清除显示，不保存 BRD。详细边界见交付 PCB_TRACE_FILTER.md。\n",
+        "Close 清除显示，不保存 BRD。完整边界以主程序走线查找页说明为准。\n",
         encoding="utf-8")
     return folder
 

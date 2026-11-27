@@ -11,9 +11,10 @@ def _pcb_verdict_code(pcb):
 
 
 def combined_verdict(pcb, smt):
-    smt_fail = smt.get("counts", {}).get("fail", 0) or any(it.get("status") == "fail" for it in smt.get("items", []))
+    smt_fail = smt.get("counts", {}).get("fail", 0) or any(it.get("status") == "fail" for it in smt.get("items", []) + smt.get("bom_findings",[]) + smt.get("assembly_findings",[]))
     smt_review = (smt.get("coverage", 0) < 1 or smt.get("counts", {}).get("review", 0)
-                  or smt.get("manual_review_count", 0) or smt.get("object_errors") or not smt.get("items"))
+                   or smt.get("manual_review_count", 0) or smt.get("object_errors") or smt.get("bom_findings") or smt.get("assembly_findings") or
+                   smt.get("assembly_errors") or any(c.get("verdict")=="review" for c in smt.get("assembly_coverage",[])) or not smt.get("items"))
     if _pcb_verdict_code(pcb) == "fail" or smt_fail:
         return "存在不符合项"
     if _pcb_verdict_code(pcb) == "review" or smt_review:

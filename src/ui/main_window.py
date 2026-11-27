@@ -394,16 +394,14 @@ class MainWindow:
         messagebox.showinfo("模板检查", "\n".join(lines))
 
     def _open_trace_filter(self):
-        from src.ui.impedance_panel import ImpedancePanel
-        dialog = getattr(self, "_impedance_window", None)
-        if dialog is not None and dialog.winfo_exists():
-            dialog.lift()
-            return
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Allegro 原生阻抗 / 走线高亮")
-        dialog.geometry("1100x800")
-        ImpedancePanel(dialog).pack(fill=tk.BOTH, expand=True)
-        self._impedance_window = dialog
+        from src.ui.dfm_dialog import DFMDialog
+        # Use the same imported-board/editor callbacks as the unified workbench.
+        dialog = getattr(self, "_trace_workbench", None)
+        if dialog is None or not dialog.win.winfo_exists():
+            dialog = DFMDialog(self.root, brd_path=self.brd_path.get())
+            self._trace_workbench = dialog
+        dialog.win.lift()
+        dialog._open_trace_filter()
 
     def _on_callback_error(self, exc_type, exc, tb):
         text = "".join(traceback.format_exception(exc_type, exc, tb))

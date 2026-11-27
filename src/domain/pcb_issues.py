@@ -514,7 +514,8 @@ def build_issues(design: dict, capability: dict, items: List[dict]) -> List[dict
         code_counter[prefix] = code_counter.get(prefix, 0) + 1
 
     from src.domain.pcb_rules import normalize_copper_um
-    copper_um = normalize_copper_um(design.get("copper_um", 35.0))
+    copper_um = (normalize_copper_um(design.get("copper_um", 35.0))
+                 if design.get("copper_um", 35.0) is not None else None)
 
     extras = _fabrication_extra_issues(design, capability, copper_um, code_counter)
     for issue in extras:

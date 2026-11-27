@@ -96,6 +96,25 @@ def build_dfm_workbook(analysis: dict, board_meta: Optional[dict] = None):
     summary = analysis.get("issue_summary", {})
 
     wb = openpyxl.Workbook()
+    stackup = analysis.get("stackup") or []
+    if stackup:
+        from openpyxl.drawing.image import Image as ExcelImage
+        from src.adapters.stackup_picture import render_stackup
+        section = wb.create_sheet("叠构剖面")
+        section.append(["铜层", "BRD设计 μm", "采用 μm", "外/内", "来源", "剖面依据"])
+        for row in stackup:
+            section.append([f"L{row['index']} {row['name']}", row.get("design_copper_um", row.get("copper_um")),
+                            row.get("copper_um"), "外层" if row.get("outer") else "内层", row.get("source", ""),
+                            "厚度未获取" if row.get("copper_um") is None else "按已知铜厚等比"])
+        section.freeze_panes = "A2"
+        for column, width in zip("ABCDEF", (28, 15, 12, 10, 42, 26)):
+            section.column_dimensions[column].width = width
+        picture = ExcelImage(render_stackup(stackup, board_thickness_mm=next(
+            (item.get("design") for item in analysis.get("items", []) if item.get("field") == "board_thickness"), None),
+            surface_finish=board_meta.get("surface_finish", "")))
+        picture.width, picture.height = 920, picture.height
+        section.add_image(picture, "H2")
+        section["H1"] = "剖面图：铜厚按已知值等比；介质/阻焊厚度未提供时仅示意，数值仍为未获取"
     component_sheet = wb.create_sheet("BRD器件坐标")
     component_sheet.append(COMPONENT_HEADERS)
     for component in analysis.get("component_coordinates", []):
@@ -325,16 +344,19 @@ def build_dfm_workbook(analysis: dict, board_meta: Optional[dict] = None):
                                      f"中 {summary.get('中',0)} / 低 {summary.get('低',0)}")
 
     headers = ["序号", "问题点(code)", "问题描述", "专家建议", "数量",
-               "优先级", "状态", "涉及层", "X位置", "Y位置", "备注"]
+               "优先级", "状态", "涉及层", "X位置", "Y位置", "备注", "问题图片", "图片来源/状态"]
     start = 4
     for c, h in enumerate(headers, 1):
         ws2.cell(row=start, column=c, value=h)
     style_header(ws2, start, len(headers))
 
-    widths = [6, 22, 46, 46, 6, 8, 8, 10, 10, 10, 18]
+    widths = [6, 22, 46, 46, 6, 8, 8, 10, 10, 10, 18, 47, 52]
     for i, w in enumerate(widths, 1):
         ws2.column_dimensions[get_column_letter(i)].width = w
 
+    from src.adapters.issue_pictures import IssuePictureContext, embed_picture, pcb_entries
+    picture_context = IssuePictureContext(pcb=analysis)
+    picture_entries = pcb_entries(analysis)
     for idx, it in enumerate(issues, 1):
         r = start + idx
         detail_sheet = f"Issue{idx}"
@@ -359,6 +381,7 @@ def build_dfm_workbook(analysis: dict, board_meta: Optional[dict] = None):
             cell.border = border
             cell.alignment = wrap
         sev_cell.alignment = center
+        embed_picture(ws2, r, 12, picture_entries[idx-1], picture_context, 13)
 
     # ==================== Info ====================
     ws3 = wb.create_sheet("Info")
@@ -480,6 +503,13 @@ def build_dfm_workbook(analysis: dict, board_meta: Optional[dict] = None):
             wsc.cell(row=4 + idx, column=3, value=prefix_cat.get(_refdes_prefix(ref), "")).border = border
 
     _sanitize_workbook(wb)
+    if analysis.get("inspection_states"):
+        state_sheet = wb.create_sheet("统一检查状态")
+        state_sheet.append(["检查键", "检查项", "数据/检查阶段", "判定", "范围", "来源", "全板完整"])
+        for row in analysis["inspection_states"]:
+            state_sheet.append([row["check_key"], row["label"], row["phase_label"], row["verdict_label"],
+                                " / ".join(s.get("scope", "") for s in row.get("scopes", [])),
+                                "；".join(row.get("sources", [])), "否"])
     return wb
 
 

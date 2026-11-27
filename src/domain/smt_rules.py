@@ -139,7 +139,9 @@ def analyze_smt(doc, profile_key, facts):
             "profile_sources": [{"path": doc["path"], "sha256": doc["sha256"]}] if doc.get("sha256") else [],
             "items": items,
             "conclusion_note": "能力匹配反映本次输入与配置的比较；产线实际管控水平需测量及过程数据验证。"}
-    result["manual_requirements"] = manual_requirements(doc)
+    result["manual_requirements"] = manual_requirements(doc, profile_key)
+    if doc.get("source_workbook"):
+        result["source_workbook"] = doc["source_workbook"]
     if str(doc["meta"]["factory"]).strip().lower() in ("立景", "lijing"):
         from src.domain.smt_geometry import _apply_panel_review
         _apply_panel_review(result, facts)
@@ -167,10 +169,12 @@ def normalize_smt_facts(doc, facts):
     return facts
 
 
-def manual_requirements(doc):
+def manual_requirements(doc, profile_key=None):
     """Preserve qualitative conditions as review items, never parse prose into PASS."""
     rows = []
     for row in doc.get("requirements", []):
+        if profile_key and row.get("profile") and row["profile"] != profile_key:
+            continue
         rows.append(dict(row, id=f"REQ-{row.get('no', len(rows) + 1)}", status="review",
                          reason="需工艺工程师结合设备、治具及实际生产条件确认"))
     for group in doc.get("design_baseline", []):
@@ -226,15 +230,15 @@ def summarize_smt(result):
     items = result["items"]
     counts = {s: sum(it["status"] == s for it in items) for s in STATUSES}
     measured = counts["pass"] + counts["fail"] + counts["not_applicable"]
-    failed = [it for it in items if it["status"] == "fail"]
+    failed = [it for it in items if it["status"] == "fail"] + [it for it in result.get("bom_findings", []) + result.get("assembly_findings",[]) if it["status"] == "fail"]
     risk = next((s for s in SEVERITIES if any(it["severity"] == s for it in failed)), None)
     pending = len(result.get("manual_requirements", []))
     verdict = ("不符合所选能力" if failed else
-               "数据或能力不完整，需复核" if measured < len(items) or result.get("object_errors") else
+               "数据或能力不完整，需复核" if measured < len(items) or result.get("object_errors") or result.get("bom_findings") or
+               result.get("assembly_findings") or result.get("assembly_errors") or any(c.get("verdict")=="review" for c in result.get("assembly_coverage",[])) else
                "定量能力项匹配，工艺条件待评审" if pending else "所选能力项匹配")
     result.update(counts=counts, coverage=measured / len(items) if items else 0,
                   manual_review_count=pending,
                   risk={"high": "高", "medium": "中", "low": "低"}.get(risk, "未发现不符合"),
                   verdict=verdict)
     return result
-

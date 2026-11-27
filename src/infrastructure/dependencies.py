@@ -2,7 +2,7 @@
 from importlib import import_module
 
 REQUIRED_MODULES = ("tkinter", "openpyxl", "yaml", "jinja2", "gerbonara", "unlzw3",
-                    "shapely", "numpy", "cryptography.hazmat.primitives.asymmetric.ed25519")
+                    "shapely", "numpy", "PIL.Image", "cryptography.hazmat.primitives.asymmetric.ed25519")
 
 
 def check_dependencies(modules=REQUIRED_MODULES):

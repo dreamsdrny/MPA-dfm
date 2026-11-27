@@ -5,6 +5,17 @@ from tkinter import ttk
 
 LANGUAGE = "zh"
 TRANSLATIONS = {
+    "整体分析 · PCB + SMT": "Analyze all · PCB + SMT", "导出分析报告…": "Export analysis report…",
+    "项目总览": "Project overview", "SMT 分析 · 供应商 / 产线": "SMT analysis · Supplier / line",
+    "仅分析 SMT": "Analyze SMT only", "SMT 供应商": "SMT supplier", "补充资料 / 模型…": "Sources / models…",
+    "导入文件": "Import file", "导入目录": "Import folder", "设置 / 工具": "Settings / tools",
+    "导入资料": "Import source", "更多工具 / 设置": "More tools / settings",
+    "导出 PCB 报告": "Export PCB report", "Gerber 预览": "Gerber preview",
+    "PCB 分析 · BRD / Gerber": "PCB analysis · BRD / Gerber",
+    "图形预览": "Geometry preview", "导出 PCB 报告": "Export PCB report", "报告预览": "Report preview",
+    "综合报告": "Combined report", "能力": "Capability", "叠构": "Stackup", "参数": "Parameters",
+    "不符合 / 待复核": "Non-compliant / review", "信息 / 缺数据": "Information / missing data",
+    "判定依据": "Verdict details", "上一页": "Previous page", "下一页": "Next page",
     "Gerber 报告": "Gerber report",
     "导入 Gerber 文件 / 压缩包": "Import Gerber file / archive",
     "导入 Gerber 目录": "Import Gerber folder", "执行 Gerber 分析": "Run Gerber analysis",
@@ -50,6 +61,18 @@ TRANSLATIONS = {
     "PCB 线宽/线距筛选":"PCB trace width / spacing filter",
     "阻抗 / 走线原生高亮":"Native impedance / trace highlight",
     "Allegro 阻抗 / 走线高亮":"Allegro impedance / trace highlight",
+    "Allegro 走线查找 / 高亮":"Allegro trace search / highlight",
+    "走线查找 / 原生高亮":"Trace search / native highlight",
+    "寻找铜层":"Target copper layer",
+    "分析条件":"Analysis conditions",
+    "设计信息（只读）":"Design data (read-only)",
+    "待补充资料":"Missing data / supplements",
+    "已连接时选点同步到 Allegro":"Sync selection to connected Allegro",
+    "导入板厂确认叠构 JSON":"Import confirmed stackup JSON",
+    "线宽 mil（留空不限）":"Width mil (blank = any)",
+    "线距 mil（留空不限）":"Spacing mil (blank = any)",
+    "在 PCB Editor 查找并高亮":"Search and highlight in PCB Editor",
+    "分析时打开 PCB Editor / 选点同步":"Open PCB Editor on analysis / sync selection",
     "PCB 报告":"PCB report", "SMT 报告":"SMT report", "报告隐藏低优先级":"Hide low-priority report items",
     "需要独立 PCB 报告":"Enable separate PCB report", "执行分析时后台导出 Gerber":"Export Gerber in background on analysis",
     "每次从 BRD 重新导出 Gerber":"Re-export Gerber from BRD on every run",
@@ -157,7 +180,11 @@ def localize_widgets(root):
                     widget._i18n_source = current
                 source = getattr(widget, "_i18n_source", current)
                 rendered = translate(source)
-                widget.configure(text=rendered)
+                # Reapplying unchanged labels generates Tk layout events. On
+                # the large PCB/SMT workbench the 600 ms refresh could keep
+                # update() busy forever, even after the worker had completed.
+                if current != rendered:
+                    widget.configure(text=rendered)
                 widget._i18n_last = rendered
             if isinstance(widget, (ttk.Label, tk.Label)) and widget.cget("textvariable"):
                 original = getattr(widget, "_i18n_original_var", None)
@@ -168,7 +195,9 @@ def localize_widgets(root):
                     widget._i18n_mirror = mirror
                     def update(*_, label=widget, var=original, output=mirror):
                         try:
-                            output.set(translate(label.getvar(var)))
+                            rendered = translate(label.getvar(var))
+                            if output.get() != rendered:
+                                output.set(rendered)
                         except tk.TclError:
                             pass
                     command = widget.register(update)
@@ -181,7 +210,9 @@ def localize_widgets(root):
                                 pass
                     widget.bind("<Destroy>", release, add="+")
                     widget.configure(textvariable=mirror)
-                widget._i18n_mirror.set(translate(widget.getvar(original)))
+                rendered = translate(widget.getvar(original))
+                if widget._i18n_mirror.get() != rendered:
+                    widget._i18n_mirror.set(rendered)
             if isinstance(widget, ttk.Notebook):
                 for tab in widget.tabs():
                     text = widget.tab(tab, "text")
@@ -192,7 +223,8 @@ def localize_widgets(root):
                     new = translate(old)
                     sources[tab] = (old, new)
                     widget._i18n_tabs = sources
-                    widget.tab(tab, text=new)
+                    if text != new:
+                        widget.tab(tab, text=new)
             if isinstance(widget, ttk.Treeview):
                 for col in widget.cget("columns"):
                     text = widget.heading(col, "text")
@@ -202,7 +234,8 @@ def localize_widgets(root):
                     new = translate(old)
                     sources[col] = (old, new)
                     widget._i18n_headings = sources
-                    widget.heading(col, text=new)
+                    if text != new:
+                        widget.heading(col, text=new)
         except tk.TclError:
             return
         for child in widget.winfo_children():

@@ -119,6 +119,8 @@ def _to_mm(spec) -> Optional[float]:
 
 def get_line_spacing_capability(capability: dict, copper_um: float = 35.0) -> Tuple[Optional[float], Optional[float]]:
     """按成品铜厚(um)查询最小线宽/线距能力, 返回 (line_um, space_um)"""
+    if copper_um is None:
+        return None, None
     table = capability.get("trace", {}).get("min_line_spacing_by_copper", [])
     if not table:
         return None, None
@@ -151,6 +153,8 @@ def normalize_copper_um(value=35.0) -> float:
 
 def select_sm_copper_row(rows: List[dict], copper_um: float) -> Optional[dict]:
     """能力表的 oz 档位换为 um，非标准铜厚保守向上选档，超范围不外推。"""
+    if copper_um is None:
+        return None
     copper_um = normalize_copper_um(copper_um)
     entries = []
     for row in rows:
@@ -167,11 +171,13 @@ def get_sm_bridge_capability(capability: dict, copper_um: float = 35.0) -> Optio
     """按外层成品铜厚(um)查询最小阻焊桥能力，返回 mm。
     单值能力与铜厚无关；分档能力向上选档，缺数据/超范围返回 None，需板厂评估。
     """
-    copper_um = normalize_copper_um(copper_um)
     sm = capability.get("solder_mask", {})
     single = sm.get("min_bridge_single")
     if single:
         return _to_mm(single)
+    if copper_um is None:
+        return None
+    copper_um = normalize_copper_um(copper_um)
     rows = sm.get("min_bridge_by_copper", [])
     chosen = select_sm_copper_row(rows, copper_um)
     if chosen is None:
@@ -290,7 +296,9 @@ def analyze_design(design: dict, board_type: str = "rigid",
     # 铜厚只使用用户输入的 um，旧 oz 字段不能覆盖它。
     if "copper_oz" in design and "copper_um" not in design:
         raise ValueError("铜厚输入已改为 copper_um（单位 um），请将旧 copper_oz 输入换算后修改")
-    copper_um = normalize_copper_um(design.get("copper_um", 35.0))
+    copper_um = (normalize_copper_um(design.get("copper_um", 35.0))
+                 if design.get("copper_um", 35.0) is not None else None)
+    copper_text = f"{copper_um:g}um" if copper_um is not None else "未获取"
     from src.domain.stackup import copper_layers
     stackup = copper_layers(design, copper_um)
 
@@ -670,7 +678,7 @@ def analyze_design(design: dict, board_type: str = "rigid",
     bridge_cap = max(bridge_limits) if all(value is not None for value in bridge_limits) else None
     add_check("阻焊", "最小阻焊桥", _num(design.get("solder_mask_bridge")),
               bridge_cap, "mm", higher_is_better=True,
-              note=f"外层成品铜厚 {copper_um:g}um；按板厂能力表向上选档，低于下限不能按当前能力生产",
+               note=f"外层铜厚 {copper_text}；按顶/底层设计值或人工确认值向上选档，叠构值不等于成品实测",
               field="solder_mask_bridge")
     bridge_unchecked = _num(design.get("solder_mask_bridge")) is None or bridge_cap is None
     # 阻焊只允许外层；内层叠构行即使带阻焊参数也不参与判定。
@@ -682,7 +690,7 @@ def analyze_design(design: dict, board_type: str = "rigid",
         start = len(items)
         add_check("外层阻焊", f"L{layer['index']} 最小阻焊桥", bridge_value, limit,
                   higher_is_better=True, field="layer_solder_mask_bridge",
-                  note=f"外层成品铜厚 {layer['copper_um']:g}um；仅顶层/底层检查")
+                   note=f"外层铜厚 {layer['copper_um'] if layer['copper_um'] is not None else '未获取'}um；仅顶层/底层检查；{layer['source']}")
         for item in items[start:]:
             item.update(layer=layer["name"], copper_um=layer["copper_um"])
         outer_mask_checks.append(dict(layer=layer["name"], checked=bridge_value is not None and limit is not None))
@@ -713,7 +721,7 @@ def analyze_design(design: dict, board_type: str = "rigid",
             "category": "阻焊", "item": "最小阻焊桥", "design": None,
             "capability": bridge_cap, "unit": "mm", "status": "info",
             "message": "外层阻焊桥未实测：需输入桥宽，或从 BRD 导出/导入 Gerber 检查，不能据此判可生产",
-            "note": f"外层成品铜厚 {copper_um:g}um", "field": "solder_mask_bridge",
+            "note": f"外层铜厚 {copper_text}", "field": "solder_mask_bridge",
             "source": "待确认",
         })
     open_cap_mm = _to_mm(sm.get("min_opening"))
@@ -721,6 +729,10 @@ def analyze_design(design: dict, board_type: str = "rigid",
         add_check("阻焊", "阻焊开窗最小尺寸", _num(design.get("solder_mask_opening")),
                   open_cap_mm, "mm", higher_is_better=True,
                   field="solder_mask_opening")
+    if copper_um is None and (not outer_layers or any(row["copper_um"] is None for row in outer_layers)):
+        items.append(dict(category="数据获取", item="外层铜厚未获取", design=None, capability=None, unit="um",
+                          status="info", field="copper_um", source="待确认",
+                          message="外层铜厚未获取：铜厚分档线宽/线距与阻焊桥能力待确认，不使用默认 35um"))
 
     # ---- 塞孔 ----
     plug_hole_d = _num(design.get("plug_hole_diameter"))

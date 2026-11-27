@@ -208,7 +208,7 @@ def brd_design_values(info: dict) -> Tuple[Dict[str, float], Dict[str, dict]]:
     # 器件数: 旧格式只解析前 100 个, 达到上限视为截断, 不给数
     comps = info.get("components") or {}
     if comps.get("ok") and comps.get("count"):
-        take("comp_count", comps["count"], "objects/Part.xml 位号清单")
+        take("comp_count", comps["count"], comps.get("source") or "objects/Part.xml 位号清单")
     take("min_line_width", info.get("min_line_width_mm"), src_of("min_line_width_mm"))
     take("min_spacing", info.get("min_spacing_mm"), src_of("min_spacing_mm"))
     take("min_neck_width", info.get("min_neck_width_mm"), src_of("min_neck_width_mm"))

@@ -18,6 +18,9 @@ def wrapped_lines(text, width):
 
 def format_workbook(wb):
     for ws in wb:
+        picture_rows = getattr(ws, "_issue_picture_rows", [])
+        # Loaded workbooks have drawing anchors but not custom Python metadata.
+        loaded_pictures = bool(getattr(ws, "_images", [])) and not picture_rows
         columns = ws.max_column
         header=1
         for row in ws.iter_rows(min_row=1,max_row=min(8,ws.max_row)):
@@ -38,7 +41,7 @@ def format_workbook(wb):
         # on Excel's 409pt maximum height. Merged cover sections are kept intact.
         merged_rows={r for area in ws.merged_cells.ranges for r in range(area.min_row,area.max_row+1)}
         for row in range(ws.max_row,0,-1):
-            if row in merged_rows:
+            if row in merged_rows or loaded_pictures:
                 continue
             parts=[]
             for col in range(1,columns+1):
@@ -61,6 +64,8 @@ def format_workbook(wb):
             if count>1:
                 styles=[copy(ws.cell(row,col)._style) for col in range(1,columns+1)]
                 ws.insert_rows(row+1,count-1)
+                picture_rows = [(image, anchor_row+count-1 if anchor_row > row else anchor_row, column)
+                                for image, anchor_row, column in picture_rows]
                 if row<header:header+=count-1
                 for offset in range(count):
                     for col,chunks in enumerate(parts,1):
@@ -76,7 +81,12 @@ def format_workbook(wb):
                 if cell.value is not None:
                     lines=max(lines,wrapped_lines(cell.value,ws.column_dimensions[cell.column_letter].width))
                 if isinstance(cell.value,str):cell.data_type="s"
-            ws.row_dimensions[row[0].row].height=min(395,max(24,lines*15+8))
+            existing_height=ws.row_dimensions[row[0].row].height or 24
+            ws.row_dimensions[row[0].row].height=min(395,max(existing_height,24,lines*15+8))
+        for image, anchor_row, column in picture_rows:
+            image.anchor=f"{get_column_letter(column)}{anchor_row}"
+            ws.row_dimensions[anchor_row].height=max(ws.row_dimensions[anchor_row].height or 24,image.height*.75+8)
+        ws._issue_picture_rows=picture_rows
         ws.freeze_panes=f"A{header+1}"
         ws.print_title_rows=f"1:{header}"
         ws.print_area=f"A1:{get_column_letter(columns)}{ws.max_row}"

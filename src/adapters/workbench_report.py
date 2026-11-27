@@ -23,6 +23,8 @@ from src.domain.combined_verdict import _pcb_verdict_code, combined_verdict  # n
 
 
 REPORT_LABELS = {"dfm": "DFM综合报告", "pcb": "PCB报告", "smt": "SMT报告"}
+REPORT_FORMATS = {".xlsx": "Excel 工作簿", ".html": "HTML 网页报告", ".csv": "CSV 表格 (UTF-8)",
+                  ".txt": "文本报告", ".json": "JSON 分析快照"}
 
 
 def default_report_name(brd_path, kind, ext=".xlsx"):
@@ -116,9 +118,17 @@ def build_combined_workbook(pcb, smt, board_meta=None):
             rows.append(["SMT", it["id"], it["label"], it["severity"], STATUSES[it["status"]],
                          it["actual"], it["requirement"], it["unit"], it["reason"],
                          it["advice"], it["source"] or "未提供"])
+    for finding in smt.get("bom_findings", []):
+        rows.append(["SMT/BOM", "", finding["rule"], finding["severity"], STATUSES[finding["status"]],
+                     finding.get("refdes"), "精确位号/封装/面别/DNP", "", finding["reason"], "核对同版 BOM/CAD", finding["source"]])
+    for finding in smt.get("assembly_findings",[]):
+        rows.append(["SMT/装配",finding.get("id"),finding["label"],finding["severity"],STATUSES[finding["status"]],
+            finding.get("actual"),finding.get("requirement"),finding.get("unit"),finding["reason"],finding.get("advice"),finding["source"]])
     _table(wb.create_sheet("DFM待办汇总", 1),
-           ["范围", "编号", "项目", "优先级", "状态", "输入值", "要求", "单位",
-            "说明", "改善建议", "来源/备注"], rows)
+            ["范围", "编号", "项目", "优先级", "状态", "输入值", "要求", "单位",
+             "说明", "改善建议", "来源/备注"], rows)
+    from src.adapters.issue_pictures import add_issue_summary, pcb_entries, smt_entries
+    add_issue_summary(wb, pcb_entries(pcb) + smt_entries(smt), pcb, smt)
     capability_rows = [[it.get(k) for k in ("category", "item", "design", "capability", "unit",
                                              "status", "message", "source", "source_detail", "note")]
                        for it in pcb.get("items", [])]
@@ -136,6 +146,9 @@ def build_combined_workbook(pcb, smt, board_meta=None):
 
 
 def _verify_report_sources(pcb, smt):
+    if smt and smt.get("linked_source_fingerprints"):
+        from src.infrastructure.snapshots import verify_sources
+        verify_sources(smt["linked_source_fingerprints"])
     if pcb and pcb.get("manufacturing_export"):
         from src.manufacturing_export import verify_export_manifest
         verify_export_manifest(pcb["manufacturing_export"])
@@ -171,10 +184,13 @@ def export_report(kind, path, pcb=None, smt=None, board_meta=None):
         raise ValueError("请先完成 SMT 分析")
     _verify_report_sources(pcb, smt)
     target = Path(path).resolve()
-    if target.suffix.lower() not in (".xlsx", ".csv"):
-        raise ValueError("报告文件请使用 .xlsx 或 .csv 扩展名")
+    ext = target.suffix.lower()
+    if ext not in REPORT_FORMATS:
+        raise ValueError("请选择支持的报告格式：" + "、".join(REPORT_FORMATS))
     if kind == "dfm":
         _validate_brd(pcb, smt)
+        if (pcb.get("overall_run_id") or smt.get("overall_run_id")) and pcb.get("overall_run_id") != smt.get("overall_run_id"):
+            raise ValueError("PCB 与 SMT 不属于同一轮整体分析，请重新执行整体分析后合并报告")
         pcb_hash = pcb.get("input_brd_sha256")
         smt_hash = smt.get("input_brd_sha256")
         if pcb_hash and smt_hash and pcb_hash != smt_hash:
@@ -182,15 +198,13 @@ def export_report(kind, path, pcb=None, smt=None, board_meta=None):
     board_meta = board_meta or {}
     if board_meta.get("hide_low_priority"):
         pcb, smt = filter_report_priority(pcb, smt)
-    if target.suffix.lower() == ".csv":
-        suffixes = (".csv",)
-    else:
-        suffixes = {"smt": (".xlsx", ".json"), "pcb": (".xlsx", ".txt"),
-                    "dfm": (".xlsx", ".txt", ".json")}[kind]
-    destinations = [target.with_suffix(suffix) for suffix in suffixes]
+    # One selection produces one file, never implicit TXT/JSON sidecars.
+    destinations = [target]
     protected = {Path(value).resolve() for value in (board_meta.get("brd_path"),
                  (pcb or {}).get("input_brd"), (smt or {}).get("input_brd")) if value}
     protected.update(Path(source["path"]).resolve() for source in (smt or {}).get("profile_sources", [])
+                      if source.get("path"))
+    protected.update(Path(source["path"]).resolve() for source in (smt or {}).get("linked_source_fingerprints", [])
                      if source.get("path"))
     protected.update(Path(source["path"]).resolve() for source in
                      ((smt or {}).get("evidence_fingerprints") or {}).get("files", [])
@@ -207,48 +221,32 @@ def export_report(kind, path, pcb=None, smt=None, board_meta=None):
         raise FileExistsError("报告或附属文件已存在，未覆盖；请选新文件名或空目录：" + "、".join(conflicts))
     target.parent.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix=".dfm-report-", dir=target.parent) as tmp:
-        staged = Path(tmp) / target.name
-        if target.suffix.lower() == ".csv":
+        payload = dict(report_type=REPORT_LABELS[kind], board=board_meta,
+                       verdict=combined_verdict(pcb, smt) if kind == "dfm" else (pcb or smt).get("verdict"),
+                       pcb=pcb if kind != "smt" else None, smt=smt if kind != "pcb" else None)
+        staged = Path(tmp) / ("report" + ext)
+        if ext == ".csv":
             _write_csv(staged, kind, pcb, smt, board_meta)
-            suffixes = (".csv",)
-        elif kind == "smt":
-            export_smt_report(smt, staged)
-            from openpyxl import load_workbook
-            workbook=load_workbook(staged)
-            format_workbook(workbook).save(staged)
-            workbook.close()
-            suffixes = (".xlsx", ".json")
-        elif kind == "pcb":
-            format_workbook(build_dfm_workbook(pcb, board_meta)).save(staged)
-            generate_dfm_text(pcb, str(staged.with_suffix(".txt")), board_meta)
-            suffixes = (".xlsx", ".txt")
+        elif ext == ".json":
+            staged.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         else:
-            format_workbook(build_combined_workbook(pcb, smt, board_meta)).save(staged)
-            pcb_text = Path(tmp) / "pcb.txt"
-            generate_dfm_text(pcb, str(pcb_text), board_meta)
-            text = ["DFM 综合报告（PCB + SMT）", f"综合结论：{combined_verdict(pcb, smt)}",
-                    "\n=== PCB 制造能力分析 ===", pcb_text.read_text(encoding="utf-8"),
-                    "\n=== SMT 工艺能力分析 ===",
-                    f"厂商：{smt['meta']['factory']} / {smt['profile_label']}",
-                    f"版本：{smt['meta']['revision']} / {smt['config_path']}",
-                    f"结论：{smt['verdict']}；覆盖率：{smt['coverage']:.0%}", smt["conclusion_note"]]
-            for it in smt["items"]:
-                text.append(f"[{STATUSES[it['status']]}] {it['id']} {it['label']}："
-                            f"{it['actual']} {it['unit']} / 能力 {it['requirement']}；"
-                             f"来源：{it['source'] or '未提供'}；{it['reason']}；建议：{it['advice']}")
-            for it in smt.get("object_findings", []):
-                text.append(f"[对象 {STATUSES.get(it.get('status'), it.get('status'))}] {it.get('id', '')} "
-                            f"{it.get('refdes', '')}/{it.get('other_refdes', '')} {it.get('side', '')} "
-                            f"X={it.get('x_mm', '')} Y={it.get('y_mm', '')} "
-                            f"实测={it.get('actual', '')} 阈值={it.get('applied_limit', it.get('requirement', ''))}；"
-                            f"{it.get('reason', '')}；来源：{it.get('source', '')}")
-            staged.with_suffix(".txt").write_text("\n".join(text), encoding="utf-8")
-            payload = dict(report_type="DFM", board=board_meta, verdict=combined_verdict(pcb, smt),
-                           pcb=pcb, smt=smt)
-            staged.with_suffix(".json").write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
-            suffixes = (".xlsx", ".txt", ".json")
-        outputs = []
+            workbook = Path(tmp) / "report.xlsx"
+            if kind == "smt":
+                export_smt_report(smt, workbook)
+                from openpyxl import load_workbook
+                loaded = load_workbook(workbook)
+                format_workbook(loaded).save(workbook)
+                loaded.close()
+            elif kind == "pcb":
+                format_workbook(build_dfm_workbook(pcb, board_meta)).save(workbook)
+            else:
+                format_workbook(build_combined_workbook(pcb, smt, board_meta)).save(workbook)
+            if ext == ".xlsx":
+                staged = workbook
+            elif ext == ".txt":
+                _write_text_report(kind, staged, tmp, pcb, smt, board_meta, workbook)
+            else:
+                _write_document_from_workbook(workbook, staged, ext)
         conflicts = [str(dest) for dest in destinations if dest.exists()]
         if conflicts:
             raise FileExistsError("报告或附属文件已存在，未覆盖；请选新文件名或空目录：" + "、".join(conflicts))
@@ -257,9 +255,71 @@ def export_report(kind, path, pcb=None, smt=None, board_meta=None):
         # process can create a target after the conflict check. Keep inode
         # identity for rollback so an unrelated replacement is never removed.
         from src.infrastructure.publication import publish_files
-        outputs = publish_files([(staged.with_suffix(suffix), target.with_suffix(suffix))
-                                 for suffix in (*suffixes[1:], suffixes[0])], copier=_copy_report_bytes)
+        outputs = publish_files([(staged.with_suffix(ext), target)], copier=_copy_report_bytes)
     return outputs
+
+
+def _write_text_report(kind, path, folder, pcb, smt, board_meta, workbook):
+    """TXT 只输出一份文本；PCB/DFM 保留既有叙述，SMT 由工作表完整导出。"""
+    if kind == "pcb":
+        generate_dfm_text(pcb, str(path), board_meta)
+        return
+    if kind == "smt":
+        _write_document_from_workbook(workbook, path, ".txt")
+        return
+    pcb_text = Path(folder) / "pcb.txt"
+    generate_dfm_text(pcb, str(pcb_text), board_meta)
+    text = ["DFM 综合报告（PCB + SMT）", f"综合结论：{combined_verdict(pcb, smt)}",
+            "\n=== PCB 制造能力分析 ===", pcb_text.read_text(encoding="utf-8"),
+            "\n=== SMT 工艺能力分析 ===",
+            f"厂商：{smt['meta']['factory']} / {smt['profile_label']}",
+            f"版本：{smt['meta']['revision']} / {smt['config_path']}",
+            f"结论：{smt['verdict']}；覆盖率：{smt['coverage']:.0%}", smt["conclusion_note"]]
+    for it in smt["items"]:
+        text.append(f"[{STATUSES[it['status']]}] {it['id']} {it['label']}："
+                    f"{it['actual']} {it['unit']} / 能力 {it['requirement']}；"
+                    f"来源：{it['source'] or '未提供'}；{it['reason']}；建议：{it['advice']}")
+    for it in smt.get("object_findings", []):
+        text.append(f"[对象 {STATUSES.get(it.get('status'), it.get('status'))}] {it.get('id', '')} "
+                    f"{it.get('refdes', '')}/{it.get('other_refdes', '')} {it.get('side', '')} "
+                    f"X={it.get('x_mm', '')} Y={it.get('y_mm', '')} "
+                    f"实测={it.get('actual', '')} 阈值={it.get('applied_limit', it.get('requirement', ''))}；"
+                    f"{it.get('reason', '')}；来源：{it.get('source', '')}")
+    for it in smt.get("bom_findings", []):
+        text.append(f"[BOM {STATUSES.get(it.get('status'), it.get('status'))}] {it.get('refdes','')} {it.get('rule','')}：{it.get('reason','')}；来源：{it.get('source','')}")
+    for it in smt.get("assembly_findings", []):
+        text.append(f"[装配 {STATUSES.get(it.get('status'))}] {it.get('label')} {it.get('refdes','')} X={it.get('x_mm')} Y={it.get('y_mm')}：{it['reason']}；来源：{it['source']}")
+    path.write_text("\n".join(text), encoding="utf-8")
+
+
+def _write_document_from_workbook(workbook_path, path, ext):
+    """Complete worksheet values; HTML images embedded so there are no sidecar folders."""
+    import base64
+    from html import escape
+    from openpyxl import load_workbook
+    wb = load_workbook(workbook_path)
+    parts = ["<!doctype html><html lang='zh'><meta charset='utf-8'><title>EVAN DFM 分析报告</title>"
+             "<style>body{font:14px Arial,sans-serif;margin:32px;color:#243449}table{border-collapse:collapse;width:100%;margin-bottom:28px}"
+             "td,th{border:1px solid #dbe3ed;padding:8px;white-space:pre-wrap;vertical-align:top}th{background:#17334d;color:white}"
+             "h1,h2{color:#17334d}img{max-width:720px}</style><h1>EVAN · DFM 分析报告</h1>"] if ext == ".html" else []
+    try:
+        for ws in wb:
+            if ext == ".html":
+                parts.append("<h2>" + escape(ws.title) + "</h2><table>")
+                for index, row in enumerate(ws.values):
+                    tag = "th" if index == 0 else "td"
+                    parts.append("<tr>" + "".join(f"<{tag}>" + escape(str(v) if v is not None else "") + f"</{tag}>" for v in row) + "</tr>")
+                parts.append("</table>")
+                for image in ws._images:
+                    data = base64.b64encode(image._data()).decode("ascii")
+                    parts.append(f"<img alt='问题图片' src='data:image/{image.format};base64,{data}'>")
+            else:
+                parts.append("\n=== " + ws.title + " ===")
+                parts.extend("\t".join(str(v) if v is not None else "" for v in row) for row in ws.values)
+        if ext == ".html": parts.append("</html>")
+        path.write_text("\n".join(parts), encoding="utf-8")
+    finally:
+        wb.close()
 
 
 def filter_report_priority(pcb, smt):
@@ -354,4 +414,26 @@ def _write_csv(path, kind, pcb, smt, board_meta):
                       capability=item.get("applied_limit", item.get("requirement")), unit=item.get("unit"),
                       x_mm=item.get("x_mm"), y_mm=item.get("y_mm"), layer=item.get("side"),
                       refdes=item.get("refdes"), source=item.get("source"),
-                      note=item.get("reason", "") + "；相邻位号：" + item.get("other_refdes", "")))
+                       note=item.get("reason", "") + "；相邻位号：" + item.get("other_refdes", "")))
+            for item in smt.get("bom_findings", []):
+                write("BOM核对", "SMT", smt, dict(item=item.get("label"), status=item.get("status"),
+                    refdes=item.get("refdes"), layer=item.get("side"), x_mm=item.get("x_mm"), y_mm=item.get("y_mm"),
+                    source=item.get("source"), note=item.get("reason", "")))
+            for item in smt.get("assembly_findings",[]):
+                write("装配补充问题","SMT",smt,dict(item=item["label"],field=item["field"],status=item["status"],
+                    measured=item.get("actual"),capability=item.get("requirement"),unit=item.get("unit"),
+                    refdes=item.get("refdes"),layer=item.get("side"),x_mm=item.get("x_mm"),y_mm=item.get("y_mm"),source=item["source"],note=item["reason"]))
+            for row in smt.get("assembly_coverage",[]):
+                write("装配覆盖与缺口","SMT",smt,dict(item=row.get("label"),field=row.get("check_key"),status=row.get("verdict"),
+                    measured=row.get("checked"),note=f"阶段 {row.get('phase')}；缺失 {row.get('missing')}；需补充 {row.get('required_data')}",source=row.get("source")))
+            for row in smt.get("manual_requirements",[]):
+                write("工艺条件待评审","SMT",smt,dict(item=row.get("item") or row.get("process"),field=row.get("id"),status="待评审",
+                    capability=row.get("supplier_value"),
+                    source=row.get("source_cells",{}).get("supplier_value") or row.get("source_sheet",""),
+                    note="；".join(f"{name}={row[name]}" for name in
+                                   ("category","process","definition","equipment","inspection","design_guidance","reference")
+                                   if row.get(name) not in (None,"")) or "原文未填写"))
+            for sheet in smt.get("source_workbook",{}).get("sheets",[]):
+                for cell in sheet["cells"]:
+                    write("采集表原文","SMT",smt,dict(item=cell["coordinate"],measured=cell["value"],
+                        source=f"{sheet['name']}!{cell['coordinate']}",note=cell.get("comment","")))

@@ -266,7 +266,7 @@ def analyze_gerbers(folder, factory="hongban", board_type="rigid", level="standa
             options["drill_directory"] = str((Path(folder) / directory).resolve())
     limits = ScanLimits(**options.get("scan_limits", {}))
     scan_stats, coverage, densities = [], [], []
-    copper_um = normalize_copper_um(copper_um)
+    copper_um = normalize_copper_um(copper_um) if copper_um is not None else None
     capability = load_capability(board_type, level, factory)
     layers = copper_layers(dict(stackup=stackup or [], layer_count=layer_count or 0), copper_um)
     silk_cap = capability.get("silkscreen", {})
@@ -375,10 +375,11 @@ def analyze_gerbers(folder, factory="hongban", board_type="rigid", level="standa
             outer_row = (next((row for row in layers if row["index"] == 1), None) if role == "mask_top"
                          else next((row for row in reversed(layers) if row["outer"]), None))
             thickness = outer_row["copper_um"] if outer_row else copper_um
+            thickness_text = f"{thickness:g}um" if thickness is not None else "未获取"
             bridge = get_sm_bridge_capability(capability, thickness)
             pieces = _points(solid)
             if bridge is None:
-                errors.append(f"{role}: 外层成品铜厚 {thickness:g}um 无阻焊桥能力数据（缺表或超出铜厚范围），需板厂评估")
+                errors.append(f"{role}: 外层铜厚 {thickness_text}，无阻焊桥能力档位（缺铜厚/缺表/超范围），需确认")
             elif not pieces:
                 errors.append(f"{role}: 阻焊图形为空，不能确认开窗/阻焊桥")
             mask_bridge_checks.append(dict(layer=role, capability=bridge, copper_um=thickness,
@@ -396,7 +397,7 @@ def analyze_gerbers(folder, factory="hongban", board_type="rigid", level="standa
                                 else "桥宽接近制程下限且处于几何近似误差范围，需 CAM 复核")
                         add(film, Point((a.x+b.x)/2, (a.y+b.y)/2), "Gerber 阻焊桥", "gerber_mask_bridge",
                             distance, bridge, "fail" if failed else "warn_limit",
-                            f"{note}（外层成品铜厚 {thickness:g}um；能力按铜厚向上选档）")
+                            f"{note}（外层铜厚 {thickness_text}；能力按铜厚向上选档，设计叠构非实测成品）")
         if role.startswith("copper"):
             index = film.get("copper_index") or layer_number(role.removeprefix("copper_"), len(layers) or None)
             layer = match_layer(layers, name=Path(film["path"]).stem, index=index)
@@ -510,7 +511,15 @@ def analyze_gerbers(folder, factory="hongban", board_type="rigid", level="standa
                     for row in coverage if row["status"] in ("missing", "incomplete", "partial")]
     if capability_fingerprint(factory) != rule_sha256:
         raise ValueError("PCB 能力 YAML 在 Gerber 分析期间发生变化，请重新分析")
+    inspection_evidence = []
+    for side in ("top", "bottom"):
+        silk_present = "silkscreen_" + side in by_role and "silkscreen_" + side not in ambiguous
+        for key, available in (("silkscreen_width", silk_present and bool(_to_mm(silk_cap.get("min_line_width")))),
+                               ("silkscreen_to_mask", silk_present and "mask_" + side in by_role and "mask_" + side not in ambiguous and bool(_to_mm(silk_cap.get("min_to_solder_mask")))),
+                               ("silkscreen_to_outline", silk_present and edge_is_authoritative and bool(_to_mm(silk_cap.get("min_to_outline"))))):
+            inspection_evidence.append(dict(check_key=key, scope=side, inspected=available, complete=False, source="Gerber"))
     return dict(checks=results, films=films, errors=errors, tolerance_mm=TOLERANCE,
+                inspection_evidence=inspection_evidence,
                 rule_sha256=rule_sha256,
                 copper_um=copper_um, mask_bridge_checks=mask_bridge_checks,
                 copper_layer_checks=copper_layer_checks, stackup=layers,
@@ -572,6 +581,7 @@ def attach_gerber_result(pcb, bundle, design_unit=""):
     result["gerber_copper_um"] = bundle["copper_um"]
     result["gerber_mask_bridge_checks"] = bundle["mask_bridge_checks"]
     result["gerber_copper_layer_checks"] = bundle["copper_layer_checks"]
+    result["inspection_evidence"] = list(bundle.get("inspection_evidence", []))
     result["geometry_coverage"] = bundle.get("geometry_coverage", [])
     result["geometry_requirements"] = bundle.get("geometry_requirements", [])
     result["geometry_data_source"] = bundle.get("geometry_data_source", "")
@@ -597,13 +607,15 @@ def attach_gerber_result(pcb, bundle, design_unit=""):
             result["items"].append(dict(category="Gerber 覆盖", item=f"{mask['copper_layer']} 外层阻焊桥扫描",
                 field="gerber_mask_bridge_scan", design=None, capability=mask["capability"], unit="mm",
                 status="info", source="Gerber", layer=mask["layer"],
-                message=f"{mask['copper_layer']}：已按铜厚 {mask['copper_um']:g}um 扫描独立开窗间桥宽",
+                message=f"{mask['copper_layer']}：按铜厚 {mask['copper_um'] if mask['copper_um'] is not None else '未获取/固定能力'}um 扫描独立开窗间桥宽",
                 note="仅外层；另扫描连通开窗内部窄桥候选；未验证每个器件焊盘都保留桥"))
     summary = result.setdefault("issue_summary", {})
     summary["高"] = sum(c.get("severity") == "高" for c in result.get("issues", []))
     summary["中"] = sum(c.get("severity") == "中" for c in result.get("issues", []))
     summary["总计"] = len(result.get("issues", []))
     from src.verdict import finalize_verdict
+    from src.domain.inspection_state import reconcile_inspections
+    reconcile_inspections(result)
     finalize_verdict(result, geometry=bundle)
     return result
 

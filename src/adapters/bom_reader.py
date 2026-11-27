@@ -14,11 +14,34 @@ import os
 import re
 
 FIELDS = ("refdes", "part_number", "value", "footprint", "description", "manufacturer",
-          "manufacturer_part_number", "side", "dnp")
+          "manufacturer_part_number", "side", "dnp", "category", "height_mm", "body_length_mm", "body_width_mm",
+          "global_mark", "tooling_hole", "test_point", "body_confirmed")
+FIELDS += ("body_origin_centered",)
+FIELDS += ("smd", "expected_pin_count")
+FIELDS += ("pth", "mounting_hole", "mounting_sides", "thermal_pair_confirmed")
+FIELDS += ("sourcing_role",)
 CONTRACT = "bom-csv-v1"
 
 # 归一化后(小写/空白合并)的表头别名 -> 合同字段
 ALIASES = {
+    "sourcing role": "sourcing_role", "主副": "sourcing_role", "主次": "sourcing_role", "主副料": "sourcing_role",
+    "料源": "sourcing_role", "替代标识": "sourcing_role",
+    "part": "value",
+    "pth": "pth", "通孔元件": "pth",
+    "mounting hole": "mounting_hole", "螺丝孔": "mounting_hole", "安装孔": "mounting_hole",
+    "mounting sides": "mounting_sides", "螺丝孔检查面": "mounting_sides",
+    "thermal pair confirmed": "thermal_pair_confirmed", "两焊端热配对已确认": "thermal_pair_confirmed",
+    "smd": "smd", "表贴": "smd", "贴装类型 smd": "smd",
+    "expected pin count": "expected_pin_count", "实体引脚数": "expected_pin_count",
+    "category": "category", "package category": "category", "封装类别": "category",
+    "height mm": "height_mm", "height": "height_mm", "高度 mm": "height_mm", "器件高度": "height_mm",
+    "body length mm": "body_length_mm", "本体长 mm": "body_length_mm",
+    "body width mm": "body_width_mm", "本体宽 mm": "body_width_mm",
+    "global mark": "global_mark", "全局 mark": "global_mark", "全局基准点": "global_mark",
+    "tooling hole": "tooling_hole", "定位孔": "tooling_hole",
+    "test point": "test_point", "测试点": "test_point",
+    "body confirmed": "body_confirmed", "本体尺寸已确认": "body_confirmed",
+    "body origin centered": "body_origin_centered", "原点为本体中心": "body_origin_centered",
     # 位号
     "refdes": "refdes", "ref des": "refdes", "ref": "refdes",
     "reference": "refdes", "references": "refdes",
@@ -172,7 +195,7 @@ def _extract_rows(matrix, header_index, mapping, strict, warnings, stats):
     by_field = {}
     for index, name in mapping.items():
         by_field.setdefault(name, index)
-    rows, seen = [], set()
+    rows, seen = [], {}
     range_seen = []
     for offset in range(header_index + 1, len(matrix)):
         cells = matrix[offset]
@@ -181,6 +204,18 @@ def _extract_rows(matrix, header_index, mapping, strict, warnings, stats):
             continue
         values = {field: _cell(matrix, offset, index)
                   for field, index in by_field.items()}
+        # Some engineering BOMs put 主/次/副 in unheaded trailing columns.
+        # These describe alternate SOURCING, not board side or DNP.
+        roles={"主":"primary","主料":"primary","主供":"primary","primary":"primary",
+               "次":"alternate","副":"alternate","次料":"alternate","副料":"alternate","alternate":"alternate"}
+        candidates=[(by_field["sourcing_role"],values.get("sourcing_role",""))] if "sourcing_role" in by_field else []
+        candidates += [(i,_cell_text(v)) for i,v in enumerate(cells) if i>max(mapping,default=-1) and i not in mapping]
+        marked=[(i,v,roles[v.lower()]) for i,v in candidates if v.lower() in roles]
+        if len({role for _,_,role in marked})>1:
+            raise ValueError(f"BOM 第{offset+1}行主副标识冲突")
+        if marked:
+            index,marker,role=marked[0]
+            values["sourcing_role"]=role
 
         ref_cell = values.get("refdes", "")
         refs = _split_refs(ref_cell)
@@ -198,18 +233,35 @@ def _extract_rows(matrix, header_index, mapping, strict, warnings, stats):
                 raise ValueError("BOM " + message + " (" + ref_cell + ")")
             warnings.append(message + ", 按位号列展开")
         for ref in refs:
+            row = {key: (ref if key == "refdes" else values.get(key, "")) for key in FIELDS}
+            row["side"] = _normalize_side(row["side"])
+            row["dnp"] = _normalize_dnp(row["dnp"])
+            row["dnp_explicit"] = "dnp" in by_field and bool(str(values.get("dnp", "")).strip())
+            if marked:
+                row.update(sourcing_marker=marker,sourcing_marker_column=index+1,source_row=offset+1)
             if ref.upper() in seen:
+                previous=seen[ref.upper()]
+                prior_role=previous.get("sourcing_role")
+                current_role=row.get("sourcing_role")
+                if {prior_role,current_role}=={"primary","alternate"}:
+                    primary,alternative=(previous,row) if prior_role=="primary" else (row,previous)
+                    if primary is row:
+                        rows[rows.index(previous)]=row
+                        seen[ref.upper()]=row
+                    primary.setdefault("alternatives",[]).append(alternative)
+                    stats["alternate_records"]=stats.get("alternate_records",0)+1
+                    continue
                 message = f"第 {offset + 1} 行位号重复: {ref}"
                 if strict:
                     raise ValueError("BOM 位号重复: " + ref)
                 warnings.append(message + ", 已保留首次出现")
                 stats.setdefault("duplicate_refdes", []).append(ref)
                 continue
-            seen.add(ref.upper())
-            row = {key: (ref if key == "refdes" else values.get(key, "")) for key in FIELDS}
-            row["side"] = _normalize_side(row["side"])
-            row["dnp"] = _normalize_dnp(row["dnp"])
+            seen[ref.upper()]=row
             rows.append(row)
+    unresolved=[r["refdes"] for r in rows if r.get("sourcing_role")=="alternate"]
+    if unresolved:
+        raise ValueError("BOM 只有副/次料而没有明确主料："+", ".join(unresolved[:20]))
     if range_seen:
         warnings.append("位号范围写法未展开(按单个位号处理): " + "、".join(range_seen[:5]))
     stats["refdes_count"] = len(rows)
@@ -311,4 +363,7 @@ def export_bom(path, rows, *, spreadsheet_safe=True):
         writer_type = SafeDictWriter if spreadsheet_safe else csv.DictWriter
         writer = writer_type(f, fieldnames=FIELDS, extrasaction="ignore")
         writer.writeheader()
-        writer.writerows(rows)
+        for row in rows:
+            writer.writerow(dict(row,dnp="" if row.get("dnp_explicit") is False else row.get("dnp", "")))
+            for alt in row.get("alternatives",[]):
+                writer.writerow(dict(alt,sourcing_role="alternate",dnp="" if alt.get("dnp_explicit") is False else alt.get("dnp","")))

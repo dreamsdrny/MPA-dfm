@@ -9,6 +9,20 @@ from src.domain.smt_objects import _side
 from src.infrastructure.resources import read_bounded
 from src.infrastructure.snapshots import fingerprint
 
+CHUNK_FIELDS={"components","pads","via_pads","native_traces","native_holes","native_pins","mask_openings","paste_openings"}
+
+
+def object_chunks(data, source):
+    files=data.get("object_files",[])
+    if not isinstance(files,list) or len(files)>128:raise ValueError("对象分块文件超限")
+    paths=[]
+    for row in files:
+        if not isinstance(row,dict) or row.get("field") not in CHUNK_FIELDS or not isinstance(row.get("path"),str):raise ValueError("对象分块合同无效")
+        path=Path(row["path"])
+        if path.is_absolute() or len(path.parts)!=1 or path.name in (".",".."):raise ValueError("对象分块仅允许同目录文件")
+        paths.append((row,Path(source).parent/path))
+    return paths
+
 
 def sha256_file(path):
     return fingerprint(path)["sha256"]
@@ -20,6 +34,7 @@ def _evidence_paths(evidence_path, brd_path, gerber_dir):
     if not isinstance(data, dict):
         raise ValueError("SMT 对象资料必须为 JSON 对象")
     paths = [evidence]
+    paths.extend(path.resolve() for _,path in object_chunks(data,evidence))
     if brd_path:
         paths.append(Path(brd_path).resolve())
     for key in ("components_file", "component_bounds_file", "bom_file"):
@@ -69,7 +84,22 @@ def load_evidence(path, brd_path):
         raise ValueError("对象资料必须明确使用 BRD 原点、轴向和 mm 坐标")
     if data.get("coordinate_alignment_confirmed") is not True:
         raise ValueError("请先确认全部对象资料与当前 BRD 的坐标原点、旋转和镜像一致")
+    if data.get("linked_source_fingerprints"):
+        from src.infrastructure.snapshots import verify_sources
+        verify_sources(data["linked_source_fingerprints"])
     data.update(_source=str(path.resolve()), _brd_path=str(Path(brd_path).resolve()))
+    chunks=object_chunks(data,path)
+    if any(data.get(field) for field in {chunk["field"] for chunk,_ in chunks}):raise ValueError("对象同字段不能同时内嵌和分块，避免重复")
+    total=path.stat().st_size
+    for chunk,child in chunks:
+        if sha256_file(child)!=chunk.get("sha256"):raise ValueError("对象分块哈希已变化")
+        total+=child.stat().st_size
+        if total>64*1024*1024:raise ValueError("对象分块总量超过64MiB安全预算")
+        rows=json.loads(read_bounded(child,16*1024*1024).decode("utf-8"))
+        if not isinstance(rows,list) or any(not isinstance(r,dict) for r in rows):raise ValueError("对象分块必须为对象列表")
+        field=chunk["field"]
+        data.setdefault(field,[]).extend(rows)
+        if len(data[field])>200000:raise ValueError("对象分块记录数量超限")
     return data
 
 
@@ -158,6 +188,7 @@ def prepare_objects(data, gerber_dir=""):
         refs = {r["refdes"].upper() for r in bom["rows"]}
         errors.extend(f"{row.get('refdes')}: BOM 中未找到位号；类别须人工确认" for row in rows
                       if row.get("refdes", "").upper() not in refs)
+    errors.extend(data.get("source_association", {}).get("errors", []))
     data["components"] = rows
     brd_components = None
     if data.get("complete", {}).get("components") is True and Path(str(data.get("_brd_path", ""))).is_file():
@@ -169,6 +200,13 @@ def prepare_objects(data, gerber_dir=""):
         except (OSError, ValueError) as exc:
             brd_components = {"ok": False}
             errors.append(f"BRD 位号读取失败：{exc}")
+        if data.get("association_contract") == "exact-refdes-v1" and data.get("expected_refdes"):
+            expected = {ref.upper() for ref in data["expected_refdes"]}
+            # The extracta identity list is source-hash bound; disagreement is
+            # explicit rather than assuming offline Part.xml was complete.
+            if brd_components and brd_components.get("ok") and {ref.upper() for ref in brd_components.get("refdes", [])} != expected:
+                errors.append("离线位号清单与原生 extracta 清单不一致，器件完整性待复核")
+                data["complete"] = dict(data.get("complete", {}), components=False)
     films, film_errors = _read_gerbers(gerber_dir, data, source)
     errors.extend(film_errors)
     return data, {"bounds": bounds, "films": films, "input_errors": errors, "brd_components": brd_components}

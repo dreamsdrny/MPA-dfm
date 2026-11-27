@@ -25,7 +25,7 @@ class GerberPanel(ttk.Frame):
         self.factory = tk.StringVar(value="hongban")
         self.board_type = tk.StringVar(value="rigid")
         self.level = tk.StringVar(value="standard")
-        self.copper = tk.StringVar(value="35")
+        self.copper = tk.StringVar(value="")
         self.layer_count = tk.StringVar()
         self.geometry_data = tk.StringVar()
         self.status = tk.StringVar(value="导入 Gerber 文件、整套目录或压缩包；无需 BRD 或 Cadence。")
@@ -168,10 +168,7 @@ class GerberPanel(ttk.Frame):
             self.info = info
             if self.shared_params is not None:
                 self.shared_params.board_name.set(Path(path).stem)
-            self.layers.delete(*self.layers.get_children())
-            for row in info["layers"]:
-                self.layers.insert("", tk.END, values=(row["name"], row["role"], row["objects"],
-                    ", ".join(f"{v:.3f}" for v in row["bounds_mm"])))
+            self.show_layers(info["layers"])
             unknown = sum(row["role"] == "unknown" for row in info["layers"])
             self.status.set(f"已导入 {len(info['layers'])} 个图层 · 未识别 {unknown} · 读取错误 {len(info['errors'])}；确认能力设置后执行分析。"
                             + ("\n" + "；".join(info["errors"][:3]) if info["errors"] else ""))
@@ -183,11 +180,18 @@ class GerberPanel(ttk.Frame):
     def ready(self):
         return bool(self.info) and not any(key in self.tasks.pending for key in ("gerber-import", "gerber-analysis"))
 
+    def show_layers(self, rows):
+        self.layers.delete(*self.layers.get_children())
+        for row in rows:
+            self.layers.insert("", tk.END, values=(row.get("name") or Path(row.get("path", "")).name,
+                row["role"], row.get("objects", ""), ", ".join(f"{v:.3f}" for v in row.get("bounds_mm", []))))
+
     def failed(self, error, revision, title):
         if revision != self.revision:
             return
         self.state = "error"
         self.status.set(title + "：" + error)
+        self.on_change()
         messagebox.showerror(title, error, parent=self)
 
     def browse_geometry(self):
@@ -213,7 +217,8 @@ class GerberPanel(ttk.Frame):
         if not self.ready:
             return
         try:
-            design = {"copper_um": normalize_copper_um(self.copper.get()), "stackup": deepcopy(self.stackup)}
+            design = {"copper_um": normalize_copper_um(self.copper.get()) if self.copper.get().strip() else None,
+                      "stackup": deepcopy(self.stackup)}
             if self.layer_count.get().strip():
                 value = float(self.layer_count.get())
                 if not value.is_integer() or value < 1:
@@ -231,20 +236,24 @@ class GerberPanel(ttk.Frame):
         self.invalidate()
         revision = self.revision
         self.state = "running"
+        self.on_change()
         def done(result):
             if revision != self.revision:
+                self.state = "idle"
                 self.status.set("分析期间输入已变化，旧结果已丢弃，请重新分析。")
+                self.on_change()
                 return
             self.last_result = result
             self.state = "complete"
+            self.show_layers(result.get("gerber_layers", []))
             self.results.render_capability(result)
             self.status.set(f"Gerber 分析完成 · {len(result['gerber_layers'])} 个图层 · 不符合 {result['error_count']} · "
                             f"待复核 {result['warning_count']} · {result.get('verdict', '')}；覆盖缺口请查看结果页签。")
-            self.results.result_var.set(self.status.get())
             self.on_change()
         self.tasks.submit("gerber-analysis", lambda: run_gerber_analysis(request), done,
             lambda error: self.failed(error, revision, "Gerber 分析失败"))
         self.status.set("正在后台执行 Gerber / NC Drill 几何检查…")
+        self.on_change()
 
     def preview(self):
         path = (self.last_result or {}).get("gerber_preview")
@@ -252,18 +261,19 @@ class GerberPanel(ttk.Frame):
             import webbrowser
             webbrowser.open(Path(path).as_uri())
 
-    def export(self, ext=".xlsx", hide_low_priority=False, preview=False):
+    def export(self, ext=".xlsx", hide_low_priority=False, preview=False, selected_path=None):
         if not self.last_result:
             return
         from tempfile import mkdtemp
         result = deepcopy(self.last_result)
+        revision = self.revision
         source = Path(result["input_gerber"])
         if preview:
             path = str(Path(mkdtemp(prefix="evan-gerber-report-")) / "Gerber报告预览.xlsx")
         else:
-            path = filedialog.asksaveasfilename(parent=self, title="导出 Gerber 分析报告", defaultextension=ext,
-                initialfile=source.stem + "_Gerber报告" + ext,
-                filetypes=[("Excel", "*.xlsx"), ("CSV", "*.csv")])
+            from src.ui.report_dialog import choose_report
+            selected=("pcb",selected_path) if selected_path else choose_report(self.winfo_toplevel(),["pcb"],str(source),"pcb")
+            path=selected[1] if selected else None
         if not path:
             return
         target = Path(path).resolve()
@@ -277,9 +287,14 @@ class GerberPanel(ttk.Frame):
                 "hide_low_priority": hide_low_priority}
         def done(paths):
             if preview:
-                os.startfile(path)
+                if revision == self.revision:
+                    os.startfile(path)
+                else:
+                    self.status.set("预览生成期间输入已变化，未打开旧报告，请重新分析。")
+                    self.on_change()
             else:
-                messagebox.showinfo("导出完成", "\n".join(paths), parent=self)
+                changed = "导出期间输入已变化；这些文件属于开始导出时的快照：\n" if revision != self.revision else ""
+                messagebox.showinfo("导出完成", changed + "\n".join(paths), parent=self)
         self.tasks.submit("report-preview" if preview else "report-export",
             lambda: export_report("pcb", path, result, board_meta=meta), done,
             lambda error: messagebox.showerror("报告导出失败", error, parent=self))

@@ -7,7 +7,6 @@ import shlex
 import math
 
 from src.infrastructure.archives import InputContainer
-from src.design_inputs.odb_features import number, parse_features, unit_scale
 
 
 def _blocks(text, name):
@@ -35,6 +34,7 @@ def _packages(text):
 
 
 def _components(text, side, packages, nets, source, step, default_scale=None):
+    from src.design_inputs.odb_features import number, unit_scale
     scale = unit_scale(text, default_scale)
     records, warnings, attributes, current = [], [], {}, None
     component_index = -1
@@ -60,16 +60,19 @@ def _components(text, side, packages, nets, source, step, default_scale=None):
                 if package_index < 0 or tokens[5] not in ("N", "M"):
                     raise ValueError("CMP 封装索引/镜像无效")
                 dnp = False
+                dnp_explicit = False
                 attrs = line.split(";")[1] if ";" in line else ""
                 for attr in attrs.split(","):
                     key, _, value = attr.strip().partition("=")
                     if attributes.get(key) == ".no_pop":
+                        dnp_explicit = True
                         dnp = value not in ("0", "N", "NO", "FALSE")
                 current = dict(refdes=tokens[6], x_mm=number(tokens[2])*scale,
                                y_mm=number(tokens[3])*scale, rotation=number(tokens[4]),
                                rotation_convention="ODB clockwise", mirror=tokens[5] == "M", side=side,
                                package=packages[package_index] if package_index < len(packages) else "",
-                                package_index=package_index, part_name=tokens[7], dnp=dnp,
+                                 package_index=package_index, part_name=tokens[7], dnp=dnp,
+                                 dnp_explicit=dnp_explicit,
                                 component_index=component_index,
                                dnp_known=any(name == ".no_pop" for name in attributes.values()),
                                pins=[], source=source, step=step, coordinate_kind="component_origin")
@@ -100,6 +103,7 @@ def _components(text, side, packages, nets, source, step, default_scale=None):
 
 
 def parse_odb(path, step=None, object_checks_only=False):
+    from src.design_inputs.odb_features import parse_features
     with InputContainer(path) as container:
         roots = {name[:-len("matrix/matrix")] for name in container.names
                  if name.lower().endswith("matrix/matrix")}

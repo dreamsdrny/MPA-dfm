@@ -13,7 +13,6 @@ from pathlib import Path
 
 from src.allegro_skill import _short_path
 
-
 BRIDGE_SKILL = r'''; Evan cross-probe: numeric millimeter coordinates only.
 evan_dfm_timer = nil
 evan_dfm_seq = -1
@@ -74,7 +73,9 @@ def discover_editor(configured=""):
     """Configured path, PATH, Cadence environment, then standard installations."""
     if configured:
         path = Path(configured.strip().strip('"')).expanduser()
-        return str(path.resolve()) if path.is_file() else ""
+        if path.is_file() and path.name.lower() in ("allegro.exe", "orcadpcb.exe"):
+            return str(path.resolve())
+        # A removed installation in preferences must not hide a valid installation.
     candidates = [shutil.which("allegro.exe"), shutil.which("orcadpcb.exe")]
     for key in ("CDSROOT", "ALLEGRO_HOME", "CDS_INST_DIR"):
         base = os.environ.get(key)
@@ -108,7 +109,7 @@ class AllegroSession:
             raise ValueError("BRD 文件不存在：" + self.brd_path)
         if not Path(self.editor_path).is_file():
             raise ValueError("请选择有效的 Allegro PCB Editor 程序")
-        self.folder = Path(bridge_dir) if bridge_dir else Path(tempfile.mkdtemp(prefix="evan-crossprobe-"))
+        self.folder = (Path(bridge_dir) if bridge_dir else Path(tempfile.mkdtemp(prefix="evan-crossprobe-"))).resolve()
         self.folder.mkdir(parents=True, exist_ok=True)
         self.request = self.folder / "point.dat"
         self.ack = self.folder / "point.ack"
@@ -117,24 +118,33 @@ class AllegroSession:
         self.process = None
         self.export_dir = ""
         self.request_time = 0.0
+        self.source_signature = None
 
     def prepare(self, export_dir=""):
+        # A private session can be prepared again without trusting an old READY.
+        for stale in (self.ack, self.request):
+            stale.unlink(missing_ok=True)
         il = self.folder / "evan_crossprobe.il"
         il.write_text(BRIDGE_SKILL, encoding="ascii")
         skill_path = _short_path(str(il).replace("\\", "/"))
         request = _short_path(str(self.folder).replace("\\", "/")) + "/point.dat"
         ack = _short_path(str(self.folder).replace("\\", "/")) + "/point.ack"
-        lines = []
+        lines = [f'skill load("{skill_path}")']
         if export_dir:
             from src.allegro_skill import write_bundle
             paths = write_bundle(export_dir)
             self.export_dir = str(Path(export_dir).resolve())
             export_il = _short_path(paths["il"].replace("\\", "/"))
             output = _short_path(self.export_dir.replace("\\", "/"))
-            lines += [f'skill load("{export_il}")', f'skill evan_pick_all("{output}")']
             geometry_il = _short_path(paths["geometry_il"].replace("\\", "/"))
-            lines += [f'skill load("{geometry_il}")', f'skill evan_geometry_all("{output}")']
-        lines += [f'skill load("{skill_path}")', f'skill evan_dfm_connect("{request}" "{ack}")']
+            # Export must finish before READY, otherwise the GUI can analyze stale CSVs.
+            lines += [f'skill evan_dfm_ack = "{ack}"',
+                      (f'skill if(errset(progn(load("{export_il}") evan_pick_all("{output}") '
+                      f'load("{geometry_il}") evan_geometry_all("{output}") t) t) '
+                      f'then evan_dfm_connect("{request}" "{ack}") '
+                      'else evan_dfm_reply(0 "EXPORT_FAILED"))')]
+        else:
+            lines += [f'skill evan_dfm_connect("{request}" "{ack}")']
         encoding = "mbcs" if os.name == "nt" else "utf-8"
         self.script.write_text("\n".join(lines) + "\n", encoding=encoding, errors="strict")
         return self.script
@@ -142,9 +152,25 @@ class AllegroSession:
     def launch(self):
         script = _short_path(str(self.script).replace("\\", "/"))
         # A read-only inspection session leaves the source BRD unchanged.
-        self.process = subprocess.Popen([self.editor_path, "-readonly", "-s", script, self.brd_path],
-                                        cwd=str(self.folder))
+        with (self.folder / "launch.log").open("wb") as log:
+            self.process = subprocess.Popen([self.editor_path, "-readonly", "-s", script,
+                                             "-p", str(self.folder), self.brd_path],
+                                            cwd=str(self.folder), stdout=log, stderr=subprocess.STDOUT)
         return self.process.pid
+
+    def validate_export(self):
+        """READY proves bridge startup, not that the exporter read every object."""
+        folder = Path(self.export_dir)
+        if not self.export_dir:
+            raise ValueError("当前 PCB Editor 会话没有坐标导出目录")
+        log = (folder / "evan_pick.log").read_text(encoding="utf-8", errors="replace")
+        if "ERROR:" in log or "DONE:" not in log:
+            raise ValueError("PCB Editor 坐标导出不完整，请检查：" + str(folder / "evan_pick.log"))
+        for name in ("evan_components.csv", "evan_holes.csv", "evan_pads.csv", "evan_traces.csv"):
+            with (folder / name).open(encoding="utf-8", errors="replace") as handle:
+                if not handle.readline().startswith("UNITS,") or not handle.readline().strip():
+                    raise ValueError("PCB Editor 坐标文件缺少单位或表头：" + name)
+        return self.export_dir
 
     def locate(self, point, radius_mm=2.5):
         x, y = point_mm(point)

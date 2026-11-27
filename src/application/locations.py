@@ -1,6 +1,8 @@
 """Coordinate discovery, import and analysis use cases."""
 import os
 
+from src.pcb_locations import component_coordinates as component_coordinates
+
 from src.infrastructure.snapshots import capture_sources, copy_request, verify_sources
 
 

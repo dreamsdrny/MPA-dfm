@@ -6,6 +6,16 @@ from src.domain.smt_rules import STATUSES
 
 
 def append_smt_sheets(wb, result, prefix=""):
+    if result.get("source_workbook"):
+        raw = wb.create_sheet(prefix + "采集表原文")
+        raw.append(["工作表", "单元格", "原始内容", "类型", "公式缓存", "批注", "链接"])
+        for sheet in result["source_workbook"]["sheets"]:
+            for cell in sheet["cells"]:
+                raw.append([sheet["name"], cell["coordinate"], str(cell["value"]) if cell["value"] is not None else None,
+                    cell["data_type"], cell.get("cached_value"), cell.get("comment"), cell.get("hyperlink")])
+        for row in raw:
+            for cell in row:
+                if isinstance(cell.value, str): cell.data_type = "s"
     overview = wb.create_sheet(prefix + "概览")
     for row in [("项目", "内容"), ("厂商", result["meta"]["factory"]),
                 ("板名", result.get("board_name", "")),
@@ -29,15 +39,68 @@ def append_smt_sheets(wb, result, prefix=""):
         ws.append([STATUSES[it[k]] if k == "status" else it.get(k) for k in keys])
     detail = wb.create_sheet(prefix + "对象问题")
     detail.append(["规则", "检查项", "状态", "位号", "相邻位号", "面别", "X(mm)", "Y(mm)",
-                   "实测值", "规则限制", "实际采用规则", "实际采用阈值", "单位", "来源", "原因", "建议"])
+                   "实测值", "规则限制", "实际采用规则", "实际采用阈值", "单位", "来源", "原因", "建议", "引脚", "相邻引脚", "量测依据", "重叠面积mm2"])
     for row in result.get("object_findings", []):
         detail.append([row.get("id"), row.get("label"), STATUSES.get(row.get("status"), row.get("status")),
                        row.get("refdes"), row.get("other_refdes"), row.get("side"), row.get("x_mm"), row.get("y_mm"),
                        row.get("actual"), row.get("requirement"), row.get("applied_rule"), row.get("applied_limit"),
                        row.get("unit"), row.get("source"), row.get("reason"), row.get("advice")])
+    for row in result.get("assembly_findings",[]):
+        detail.append([row.get("id"),row.get("label"),STATUSES.get(row.get("status")),row.get("refdes"),row.get("other_refdes"),row.get("side"),
+            row.get("x_mm"),row.get("y_mm"),row.get("actual"),row.get("requirement"),"",row.get("requirement"),row.get("unit"),row.get("source"),row.get("reason"),row.get("advice"),row.get("pin"),row.get("other_pin"),row.get("measurement_basis"),row.get("overlap_area_mm2")])
     for error in result.get("object_errors", []):
         detail.append(["", "资料核对", "数据不足", "", "", "", "", "", "", "", "", "", "", "", error])
+    if result.get("bom_analysis"):
+        bom_sheet = wb.create_sheet(prefix + "BOM核对")
+        bom_sheet.append(["位号", "面", "封装", "料号", "DNP", "状态", "冲突/缺失", "BOM来源", "SHA256"])
+        for row in result["bom_analysis"]["rows"]:
+            bom_sheet.append([row.get(k) for k in ("refdes", "side", "footprint", "part_number", "dnp", "status")]
+                             + ["；".join(row.get("issues", [])), result["bom_analysis"]["path"], result["bom_analysis"]["source_sha256"]])
+        for row in bom_sheet:
+            for cell in row:
+                if isinstance(cell.value,str):
+                    cell.data_type="s"
+        alternates=wb.create_sheet(prefix+"BOM主副料")
+        alternates.append(["位号","料源角色","料号","MPN","Excel行","原标识","标识列","是否采用"])
+        for row in result["bom_analysis"]["rows"]:
+            if row.get("alternatives"):
+                alternates.append([row["refdes"],"主料",row.get("part_number"),row.get("manufacturer_part_number"),row.get("source_row"),row.get("sourcing_marker"),row.get("sourcing_marker_column"),"是（按明确主标识）"])
+                for alt in row["alternatives"]:
+                    alternates.append([row["refdes"],"副/次料",alt.get("part_number"),alt.get("manufacturer_part_number"),alt.get("source_row"),alt.get("sourcing_marker"),alt.get("sourcing_marker_column"),"否（保留供核对）"])
+        for cells in alternates:
+            for cell in cells:
+                if isinstance(cell.value,str):cell.data_type="s"
     sheets = [overview, ws, detail]
+    if result.get("supplement_analysis"):
+        supplement=wb.create_sheet(prefix+"ODB_STP协同核对")
+        supplement.append(["资料","字段","核对/缺口"])
+        for kind,record in result["supplement_analysis"].items():
+            for key,value in record.items():supplement.append([kind,key,json.dumps(value,ensure_ascii=False) if isinstance(value,(dict,list)) else value])
+        sheets.append(supplement)
+    if result.get("assembly_coverage"):
+        assembly_sheet=wb.create_sheet(prefix+"装配补充检查")
+        assembly_sheet.append(["检查键","检查项","阶段","判定","测量数","未取得数","所需资料","规则来源"])
+        for row in result["assembly_coverage"]:
+            assembly_sheet.append([row.get(k) for k in ("check_key","label","phase","verdict","checked","missing","required_data","source")])
+        for error in result.get("assembly_errors",[]):assembly_sheet.append(["未完成",error])
+        sheets.append(assembly_sheet)
+    if result.get("inspection_states"):
+        state_sheet = wb.create_sheet(prefix + "统一检查状态")
+        state_sheet.append(["检查键", "阶段", "判定", "全板完整"])
+        for state in result["inspection_states"]:
+            state_sheet.append([state["check_key"], state.get("phase_label", state["phase"]),
+                                state.get("verdict_label", state["verdict"]), "否"])
+        sheets.append(state_sheet)
+    if result.get("source_association"):
+        association = wb.create_sheet(prefix + "资料关联")
+        association.append(["位号", "面", "关联状态", "轮廓依据", "类别", "高度 mm", "封装", "冲突"])
+        for row in result["source_association"].get("rows", []):
+            association.append([row.get(k) for k in ("refdes", "side", "status", "boundary", "category", "height_mm", "footprint")] + ["；".join(row.get("issues", []))])
+        for side, completeness in result.get("assembly_completeness", {}).items():
+            association.append(["完整性", side, json.dumps(completeness, ensure_ascii=False)])
+        for error in result["source_association"].get("errors", []):
+            association.append(["资料问题", "", error])
+        sheets.append(association)
     if result.get("baseline_comparison"):
         comparison = wb.create_sheet(prefix + "内部基线对比")
         comparison.append(["检查项", "字段", "内部基线", "供应商能力", "单位", "匹配", "依据"])
@@ -67,6 +130,8 @@ def append_smt_sheets(wb, result, prefix=""):
             for cell in row:
                 if isinstance(cell.value, str):
                     cell.data_type = "s"
+    from src.adapters.issue_pictures import add_issue_summary, smt_entries
+    add_issue_summary(wb, smt_entries(result), smt=result, name=prefix + "Issue summary")
     return overview, ws
 
 

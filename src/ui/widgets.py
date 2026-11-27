@@ -99,7 +99,7 @@ def scroll_area(parent) -> tuple:
     return canvas, inner
 
 
-def make_tree(parent, columns, height=24):
+def make_tree(parent, columns, height=24, compact_detail=False):
     """带双向滚动条的只读表格。
 
     columns: [(列id, 表头, 宽度, 最小宽度, 对齐), ...]
@@ -133,14 +133,24 @@ def make_tree(parent, columns, height=24):
     ds=ttk.Scrollbar(frame,orient="vertical",command=detail.yview)
     ds.grid(row=2,column=1,sticky="ns")
     detail.configure(yscrollcommand=ds.set)
+    placeholder = "选择一条记录查看完整说明。" if compact_detail else ""
+    def set_detail(text):
+        detail.configure(state="normal")
+        detail.delete("1.0","end")
+        detail.insert("1.0", text)
+        detail.configure(state="disabled")
     def show_detail(_event=None):
         selected=tree.selection()
         if selected:
             values=tree.item(selected[0],"values")
-            detail.configure(state="normal")
-            detail.delete("1.0","end")
-            detail.insert("1.0","\n".join(f"{tree.heading(cid,'text')}: {value}" for cid,value in zip(ids,values)))
-            detail.configure(state="disabled")
-    tree.bind("<ButtonRelease-1>",lambda e:tree.after_idle(show_detail),add="+")
+            if compact_detail:
+                set_detail(str(values[-1]))
+            else:
+                set_detail("\n".join(f"{tree.heading(cid,'text')}: {value}" for cid,value in zip(ids,values)))
+        else:
+            set_detail(placeholder)
+    tree.bind("<<TreeviewSelect>>",show_detail,add="+")
     tree._full_text=detail
+    tree._clear_detail = lambda: set_detail(placeholder)
+    set_detail(placeholder)
     return tree

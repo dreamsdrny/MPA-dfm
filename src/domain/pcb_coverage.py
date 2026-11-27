@@ -217,5 +217,9 @@ def coverage_rows(capability: dict, design: dict, existing_items: List[dict],
             unmapped += 1
 
     stats = {"total": len(leaves), "covered": covered, "judged": judged,
-             "missing": missing, "unmapped": unmapped}
+              "missing": missing, "unmapped": unmapped}
+    from src.domain.inspection_state import check_key
+    for row in rows:
+        row["check_key"] = check_key(row.get("field", "")) or row["item"]
+        row["data_state"] = "available" if row.get("design") is not None else "unavailable"
     return rows, stats

@@ -5,11 +5,11 @@ from tempfile import mkdtemp
 from src.adapters import reports
 from src.application.manufacturing import require_project_sources
 from src.infrastructure.snapshots import copy_request, verify_sources
-from src.adapters.workbench_report import REPORT_LABELS, default_report_name
+from src.adapters.workbench_report import REPORT_FORMATS, REPORT_LABELS, default_report_name
 from src.domain.verdict import VERDICT_LABELS
 from src.adapters.coordination_report import STATUS_LABELS
 
-__all__ = ["REPORT_LABELS", "STATUS_LABELS", "VERDICT_LABELS", "default_report_name", "export_brd_report",
+__all__ = ["REPORT_FORMATS", "REPORT_LABELS", "STATUS_LABELS", "VERDICT_LABELS", "default_report_name", "export_brd_report",
            "export_coordination", "export_report", "preview_coordination"]
 
 
@@ -98,3 +98,44 @@ def write_smt_template(brd_path, path):
 def capture_template_sources(brd_path):
     from src.infrastructure.snapshots import capture_sources
     return capture_sources([brd_path])
+
+
+def write_assembly_rule_template(path):
+    import json
+    from src.infrastructure.publication import publish_files
+    from tempfile import TemporaryDirectory
+    from src.domain.smt_multireport import NUMERIC_RULES, OTHER_RULES
+    from src.domain.smt_pad_integrity import NUMERIC_RULES as PAD_RULES
+    from src.domain.smt_report_extensions import NUMERIC_RULES as EXT_RULES, OTHER_RULES as EXT_OTHER
+    data={"schema_version":1,"assembly_rules":{"source":"","revision":"","via_in_pad_policy":"review",
+        "wave_solder_applicable":None,"transport_axis":None,
+        **{key:None for key in ("toe_max_mm","paste_spacing_mm","test_to_silk_mm","mark_like_pad_mm",
+            "mark_mask_clearance_mm","opposite_side_clearance_mm","board_width_min_mm","board_width_max_mm","edge_gap_max_mm",
+            "pth_to_opposite_smd_mm","mounting_clearance_mm","heel_min_mm","thermal_halo_mm","thermal_copper_ratio_max",
+            "thermal_imbalance_max","panel_rib_min_mm")}, **{key:None for key in sorted(NUMERIC_RULES | OTHER_RULES | PAD_RULES | EXT_RULES | EXT_OTHER)}}}
+    target=Path(path).resolve()
+    target.parent.mkdir(parents=True,exist_ok=True)
+    with TemporaryDirectory(prefix=".assembly-template-",dir=target.parent) as temp:
+        staged=Path(temp)/target.name
+        staged.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding="utf-8")
+        publish_files([(staged,target)])
+    return str(target)
+
+
+def write_step_model_template(brd_path,step_path,path):
+    """Hash-bind empty confirmation template, never invent a mechanical body."""
+    import json
+    from tempfile import TemporaryDirectory
+    from src.adapters.smt_evidence import sha256_file
+    from src.infrastructure.publication import publish_files
+    from src.adapters.step_reader import parse_step
+    inventory=parse_step(step_path)
+    data=dict(schema_version=1,unit="mm",coordinate_system="brd",alignment_confirmed=False,
+              brd_sha256=sha256_file(brd_path),step_sha256=sha256_file(step_path),components=[],
+              note="经CAD/工程确认填refdes、side、step_product、outline、height_mm、source、confirmed；不能用STP点集合外接盒代替本体",
+              available_step_products=inventory["products"])
+    target=Path(path).resolve();target.parent.mkdir(parents=True,exist_ok=True)
+    with TemporaryDirectory(prefix=".step-template-",dir=target.parent) as folder:
+        staged=Path(folder)/target.name;staged.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding="utf-8")
+        publish_files([(staged,target)])
+    return str(target)

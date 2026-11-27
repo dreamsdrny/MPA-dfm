@@ -21,3 +21,6 @@ class PCBAnalysisRequest:
     odb_exporter: str = ""
     output_dir: str = ""
     timeout: int = 180
+    stackup_sources: tuple = ()
+    extract_native: bool = True
+    native_data: dict | None = None

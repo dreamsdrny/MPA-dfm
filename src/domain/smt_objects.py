@@ -91,6 +91,9 @@ def analyze_objects(doc, profile_key, data, *, bounds=None, films=None, input_er
     components = []
     bounds = bounds or {}
     component_rows = list(data.get("components", []))
+    if data.get("dnp_components"):
+        dnp_refs = {r["refdes"].upper() for r in data["dnp_components"] if r.get("reason") == "BOM 明确 DNP"}
+        component_rows = [row for row in component_rows if row.get("refdes", "").upper() not in dnp_refs]
     seen = set()
     for obj in component_rows:
         ref = str(obj.get("refdes", "")).strip()
@@ -110,6 +113,8 @@ def analyze_objects(doc, profile_key, data, *, bounds=None, films=None, input_er
             errors.append("BRD 中没有可核对的完整位号清单，无法确认器件完整性")
         else:
             expected = {ref.upper() for ref in brd_components.get("refdes", [])}
+            expected -= {row["refdes"].upper() for row in data.get("dnp_components", []) if row.get("reason") == "BOM 明确 DNP"}
+            expected -= {str(ref).upper() for ref in data.get("non_assembly_refdes", [])}
             observed = {c["refdes"].upper() for c in components}
             if expected != observed:
                 data = dict(data, complete=dict(data.get("complete", {}), components=False))
@@ -233,7 +238,12 @@ def analyze_objects(doc, profile_key, data, *, bounds=None, films=None, input_er
         if field not in evidence:
             continue
         if complete.get("components") is not True:
-            add(field, "missing", "器件清单或轮廓完整性未确认")
+            per_side = [side for side in data.get("assembly_sides", []) if complete.get("components_" + side.lower()) is not True]
+            if per_side:
+                for side in per_side:
+                    add(field, "missing", "该贴装面器件清单/轮廓/身份完整性未确认", side=side)
+            else:
+                add(field, "missing", "器件清单或轮廓完整性未确认")
         elif not evidence[field]:
             relevant = [c for c in valid if SPACING.get(c["category"]) == field or EDGE.get(c["category"]) == field
                         or (c["category"] == "bga" and field.startswith("bga_"))
@@ -263,6 +273,10 @@ def analyze_objects(doc, profile_key, data, *, bounds=None, films=None, input_er
                 measure(fields[0], len(confirmed), "已确认对象数量")
         else:
             add(fields[0], "missing", "对象清单完整性未确认")
+        for side in data.get("assembly_sides", []):
+            if complete.get(kind + "_" + side.lower()) is False:
+                for field in fields:
+                    add(field, "missing", "该贴装面对象完整性未确认", side=side)
         if unknown:
             # Candidate identities may change the count, so a shortage is not a confirmed violation.
             for record in evidence.get(fields[0], []):
@@ -432,6 +446,11 @@ def apply_object_results(result, evidence, errors=()):
                     margin=chosen.get("margin"), source=chosen.get("source", ""))
     result["object_findings"] = findings
     result["object_errors"] = list(errors)
+    result["object_evidence"] = evidence
+    result["inspection_states"] = [dict(check_key=item["field"], phase="unavailable" if item["status"] in ("missing", "unconfigured") else
+                                        "partial" if item["status"] == "review" else "checked",
+                                        verdict="fail" if item["status"] == "fail" else "review" if item["status"] in ("missing", "review", "unconfigured") else "within_scope",
+                                        full_board_complete=False) for item in result["items"]]
     from src.domain.smt_rules import summarize_smt
     summarize_smt(result)
     return result
