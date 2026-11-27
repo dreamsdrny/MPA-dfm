@@ -1,18 +1,20 @@
 @echo off
 chcp 65001 >nul
+setlocal
+
 echo ============================================
 echo  MPA_DFM: PCB + SMT + Checklist (single application)
 echo ============================================
 echo.
 
-for %%P in (MPA_DFM.exe) do (
-    tasklist /FI "IMAGENAME eq %%P" 2>nul | find /I "%%P" >nul
-    if not errorlevel 1 (
-        echo [WARN] %%P is running. Closing it so the old build can be replaced...
-        taskkill /IM %%P /F >nul 2>&1
-    )
+rem Build a unique name for this run. Old EXEs in dist are never overwritten or deleted.
+for /f %%i in ('python -c "import datetime;print(datetime.datetime.now().strftime('%%Y%%m%%d_%%H%%M%%S'))"') do set "BUILD_STAMP=%%i"
+if not defined BUILD_STAMP (
+    echo [ERROR] Could not create a build timestamp. Check that python is available.
+    goto failed
 )
-timeout /t 2 /nobreak >nul
+set "EVAN_BUILD_STAMP=%BUILD_STAMP%"
+set "OUT_EXE=dist\MPA_DFM_%BUILD_STAMP%.exe"
 
 python -m pip show pyinstaller >nul 2>&1
 if %errorlevel% neq 0 (
@@ -22,14 +24,20 @@ if %errorlevel% neq 0 (
 )
 
 echo.
-echo Building MPA_DFM.exe (PCB + SMT + Checklist)...
+echo Building %OUT_EXE% (PCB + SMT + Checklist)...
 python -m PyInstaller --clean --noconfirm "MPA_DFM.spec"
 if %errorlevel% neq 0 goto failed
+
+if not exist "%OUT_EXE%" (
+    echo [ERROR] Expected output not found: %OUT_EXE%
+    goto failed
+)
 
 echo.
 echo ============================================
 echo  Build SUCCESS!
-echo   dist\MPA_DFM.exe  (PCB + SMT + Checklist)
+echo   %OUT_EXE%
+echo   Previous builds are kept in the dist folder.
 echo ============================================
 pause
 exit /b 0
