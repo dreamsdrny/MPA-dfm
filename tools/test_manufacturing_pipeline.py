@@ -110,6 +110,8 @@ def test_combined_pipeline_keeps_both_coverage_drills_and_reports(tmp_path):
     assert not result["releasable"]
     assert "原生导出与校验" in build_dfm_workbook(result).sheetnames
     export_report("pcb", tmp_path/"report.xlsx", pcb=result)
+    assert sorted(p.name for p in tmp_path.glob("report.*")) == ["report.xlsx"]
+    export_report("pcb", tmp_path/"report.txt", pcb=result)
     assert "原生制造导出清单" in (tmp_path/"report.txt").read_text(encoding="utf-8")
     export_report("pcb", tmp_path/"report.csv", pcb=result)
     assert "原生导出与校验" in (tmp_path/"report.csv").read_text(encoding="utf-8-sig")

@@ -178,7 +178,7 @@ def test_standalone_real_ui_import_run_export_and_invalidation(tmp_path):
         wait()
         assert panel.last_result["geometry_executed"]
         assert str(dialog.report_buttons["pcb"].cget("state")) == "normal"
-        with patch("src.ui.gerber_panel.filedialog.asksaveasfilename", return_value=str(tmp_path / "ui.xlsx")), \
+        with patch("src.ui.report_dialog.choose_report", return_value=("pcb",str(tmp_path / "ui.xlsx"))), \
                 patch("src.ui.gerber_panel.messagebox.showinfo"):
             dialog._export("pcb")
             wait()
@@ -197,10 +197,10 @@ def test_standalone_real_ui_import_run_export_and_invalidation(tmp_path):
             dialog.language.set("English")
             dialog._apply_language()
             dialog._refresh_action_states()
-            assert str(dialog.run_button.cget("text")) == "Run PCB analysis"
+            assert str(dialog.run_button.cget("text")) == "Analyze all · PCB + SMT"
             dialog.language.set("中文")
             dialog._apply_language()
             dialog._refresh_action_states()
-            assert str(dialog.run_button.cget("text")) == "执行 PCB 分析"
+            assert str(dialog.run_button.cget("text")) == "整体分析 · PCB + SMT"
     finally:
         dialog._finish_close()

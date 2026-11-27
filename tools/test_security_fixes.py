@@ -96,15 +96,19 @@ def test_csv_escapes_formula_and_dfm_contains_smt(tmp_path):
     assert "'=1+1" in (tmp_path/"bom.csv").read_text(encoding="utf-8-sig")
 
 
-def test_report_sidecar_not_overwritten(tmp_path):
-    sidecar = tmp_path/"report.txt"
-    sidecar.write_text("original", encoding="utf-8")
+def test_report_target_is_never_overwritten(tmp_path):
+    """选择“一个文件”后不再牵连其他扩展名，但已有目标仍拒绝覆盖。"""
+    other = tmp_path/"report.txt"
+    other.write_text("original", encoding="utf-8")
+    target = tmp_path/"report.xlsx"
+    target.write_bytes(b"existing")
     pcb = {"items": [], "input_brd": "board", "coverage": {}, "issues": [], "error_count": 0,
            "warning_count": 0, "verdict": "review", "factory_label": "F", "capability_label": "C", "board_type_label": "R"}
     with pytest.raises(FileExistsError):
-        export_report("pcb", tmp_path/"report.xlsx", pcb=pcb)
-    assert sidecar.read_text(encoding="utf-8") == "original"
-    assert not (tmp_path/"report.xlsx").exists()
+        export_report("pcb", target, pcb=pcb)
+    assert other.read_text(encoding="utf-8") == "original"
+    assert target.read_bytes() == b"existing"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["report.txt", "report.xlsx"]
 
 
 def test_smt_duplicate_yaml_and_changed_profile(tmp_path):

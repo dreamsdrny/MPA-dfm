@@ -39,9 +39,7 @@ def test_action_numeric_input_is_canonicalized_for_skill(tmp_path):
     assert text.count('"10"') == 2
 
 
-def test_impedance_panel_discards_old_result_after_layer_change(tmp_path):
-    import threading
-    import time
+def test_impedance_panel_has_only_layer_width_spacing(tmp_path):
     import tkinter as tk
     from src.ui.impedance_panel import ImpedancePanel
     try:
@@ -50,30 +48,14 @@ def test_impedance_panel_discards_old_result_after_layer_change(tmp_path):
         pytest.skip(str(exc))
     panel = ImpedancePanel(root)
     try:
-        panel.folder.set(str(tmp_path))
-        panel.catalogue = {"board": "board", "catalog_sha256": "same", "session_token": "token", "rules": []}
-        panel.layer.set("TOP")
-        started, finish = threading.Event(), threading.Event()
-        def slow_results(_folder):
-            started.set()
-            finish.wait(timeout=3)
-            return [{"BRD": "board", "LAYER": "ETCH/TOP", "NET": "N", "WIDTH_MIL": "5",
-                     "SPACING_MIL": "", "PAIR": "", "IMPEDANCE_RULE": "", "PHYSICAL_CSET": ""}]
-        with patch("src.ui.impedance_panel.read_catalogue", return_value=panel.catalogue), \
-                patch("src.ui.impedance_panel.read_results", side_effect=slow_results), \
-                patch("src.ui.impedance_panel.messagebox.showerror") as error:
-            panel._results()
-            assert started.wait(timeout=2)
-            panel.layer.set("BOTTOM")
-            finish.set()
-            deadline = time.monotonic() + 3
-            while panel.tasks.pending and time.monotonic() < deadline:
-                root.update()
-                time.sleep(0.01)
-            assert not panel.tasks.pending
-            assert "已丢弃" in panel.status.get()
-            assert not panel.rules.get_children()
-            error.assert_not_called()
+        assert set(panel.inputs) == {"layer", "width", "spacing"}
+        for removed in ("folder", "mode", "net", "pair", "impedance", "tolerance", "color", "rules"):
+            assert not hasattr(panel, removed)
+        panel.set_layers(["TOP", "BOTTOM"])
+        assert panel.layer.get() == "TOP"
+        panel.set_layers([])
+        assert not panel.layer.get()
+        assert str(panel.apply_button.cget("state")) == "disabled"
     finally:
         panel.tasks.close()
         root.destroy()
@@ -309,7 +291,7 @@ def test_integrated_main_window_selects_native_tab():
             dialog = DFMDialog(root, standalone=True)
         dialog.trace_filter_button.invoke()
         assert dialog.workbench.select() == str(dialog.impedance_panel)
-        assert dialog.impedance_panel.catalogue is None
+        assert set(dialog.impedance_panel.inputs) == {"layer", "width", "spacing"}
         dialog._close()
     finally:
         try:

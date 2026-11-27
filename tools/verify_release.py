@@ -161,7 +161,8 @@ def main():
                                  cwd=work, env=env, timeout=90, check=False)
         trace = json.loads(trace_output.read_text(encoding="utf-8"))
         assert process.returncode == 0 and trace.get("valid"), trace
-        assert "走线高亮" in trace.get("trace_title", "") and trace.get("integrated_tab"), trace
+        assert "走线查找" in trace.get("trace_title", "") and trace.get("integrated_tab"), trace
+        assert trace.get("inputs") == ["layer", "width", "spacing"] and trace.get("direct_editor_launch"), trace
         results.append({"case": "trace_gui", "returncode": process.returncode, **trace})
         smt_output = evidence / "smt_ui.json"
         process = subprocess.run([str(exe), "--check-smt-ui", str(smt_output)],
@@ -169,7 +170,21 @@ def main():
         smt = json.loads(smt_output.read_text(encoding="utf-8"))
         assert process.returncode == 0 and smt.get("valid"), smt
         assert smt.get("manual_conditions") == 54 and smt.get("baseline_rows", 0) > 0, smt
+        assert smt.get("issue_pictures",0)>0 and smt.get("assembly_coverage_rows",0)>0, smt
+        from src.domain.smt_manufacturing import CHECKS
+        assert smt.get("r11_conveyor_checked") and smt.get("assembly_coverage_rows")==len(CHECKS), smt
+        assert smt.get("r12_pin_mask_checked"),smt
+        assert smt.get("r14_txd_checked") and smt.get("txd_rows")==108,smt
         results.append({"case": "smt_gui", "returncode": process.returncode, **smt})
+        viewer_output = evidence / "viewer_ui.json"
+        process = subprocess.run([str(exe), "--check-viewer-ui", str(viewer_output)],
+                                 cwd=work, env=env, timeout=120, check=False)
+        viewer = json.loads(viewer_output.read_text(encoding="utf-8"))
+        assert process.returncode == 0 and viewer.get("valid"), viewer
+        assert viewer.get("layers") == 6 and viewer.get("issues") == 1, viewer
+        assert viewer.get("overview_first_tab") == "项目总览" and sorted(viewer.get("viewer_entries")) == ["gerber", "odb"], viewer
+        assert "mm/px" in viewer.get("rendered", ""), viewer
+        results.append({"case": "viewer_gui", "returncode": process.returncode, **viewer})
     write_document(evidence / "verification.json", {"results": results, "exe_sha256": digest})
     print(json.dumps(results, ensure_ascii=False, indent=2))
 

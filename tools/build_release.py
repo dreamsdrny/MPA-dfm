@@ -1,14 +1,13 @@
 """构建中性产品名称的限期授权包，私钥仅保存在独立管理员目录。"""
 import argparse
 import base64
-from datetime import date
+from datetime import date, datetime
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
-import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -38,18 +37,40 @@ def prepare_config(output, key):
     return config
 
 
+def unique_output(path):
+    """返回一个未占用的交付目录；已有目录原样保留，绝不覆盖历史构建。"""
+    if not path.exists() or not any(path.iterdir()):
+        return path
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    candidate = path.with_name(f"{path.name}_{stamp}")
+    counter = 2
+    while candidate.exists() and any(candidate.iterdir()):
+        candidate = path.with_name(f"{path.name}_{stamp}_{counter}")
+        counter += 1
+    return candidate
+
+
+def strip_delivery_docs(output):
+    """交付包不携带 Markdown 文档；只删已知输出目录内的文档，不碰历史交付。"""
+    removed = []
+    for stale in Path(output).rglob("*"):
+        if stale.is_file() and stale.suffix.lower() == ".md":
+            removed.append(stale.relative_to(output).as_posix())
+            stale.unlink()
+    return removed
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", required=True)
     parser.add_argument("--admin", required=True, help="不得位于交付包内；保存DPAPI保护的发行私钥")
     parser.add_argument("--days", type=int, default=60)
     args = parser.parse_args()
-    output, admin = Path(args.out).resolve(), Path(args.admin).resolve()
-    archive = output.with_suffix(".zip")
-    if archive.exists():
-        raise ValueError("交付 ZIP 已存在，拒绝覆盖")
-    if output.exists() and any(output.iterdir()):
-        raise ValueError("交付目录非空，请选择新的目录，避免覆盖旧交付")
+    requested = Path(args.out).resolve()
+    output, admin = unique_output(requested), Path(args.admin).resolve()
+    # 每次构建落到新的交付目录：已有内容一律保留，不覆盖、不删除历史 EXE。
+    if output != requested:
+        print(f"交付目录已存在，本次使用新目录：{output}")
     if admin == output or admin.is_relative_to(output):
         raise ValueError("管理员私钥目录不能放入交付目录")
     admin.mkdir(parents=True, exist_ok=True)
@@ -64,6 +85,8 @@ def main():
     staging = admin / ("config-build-" + date.today().isoformat())
     config = prepare_config(staging, key)
     env = dict(os.environ, EVAN_CONFIG_DIR=str(config), EVAN_BUILD_NAME="Evan_MPA_DFM")
+    # 发行包保持稳定的 Evan_MPA_DFM.exe 名称，由独立的新目录实现“不覆盖历史”。
+    env.pop("EVAN_BUILD_STAMP", None)
     subprocess.run([sys.executable, "-m", "PyInstaller", "--clean", "--noconfirm",
                     "--distpath", str(output), "--workpath", str(admin / "pyinstaller"),
                     str(ROOT / "MPA_DFM.spec")], cwd=ROOT, env=env, check=True)
@@ -71,30 +94,22 @@ def main():
     first, last = license_dates(days=args.days)
     write_document(output / "license.json", issue_license(
         key, APP_ID, first, last, target_sha256=checksums(exe)["sha256"]))
-    from src.impedance_plugin import write_plugin
-    write_plugin(output / "IMP_HIGHLIGHT")
-    for source in (ROOT / "TUTORIAL.md", ROOT / "docs" / "ARCHITECTURE.md", ROOT / "docs" / "ACCEPTANCE_TESTS.md",
-                    ROOT / "docs" / "LAYERED_ARCHITECTURE.md",
-                    ROOT / "docs" / "PCB_TRACE_FILTER.md", ROOT / "docs" / "SMT_TESTING.md",
-                    ROOT / "docs" / "IMP_QUICK_START.md", ROOT / "docs" / "SECURITY_FIXES_20261124.md",
-                    ROOT / "docs" / "GERBER_STANDALONE.md"):
-        text = source.read_text(encoding="utf-8")
-        text = text.replace("(docs/ARCHITECTURE.md)", "(ARCHITECTURE.md)")
-        text = text.replace("(docs/ACCEPTANCE_TESTS.md)", "(ACCEPTANCE_TESTS.md)")
-        text = text.replace("(docs/SMT_TESTING.md)", "(SMT_TESTING.md)")
-        text = text.replace("(docs/GERBER_STANDALONE.md)", "(GERBER_STANDALONE.md)")
-        (output / source.name).write_text(text, encoding="utf-8")
+    # 交付目录只放可执行程序和运行所需资料。说明书不随包分发：此前每版
+    # 都带十几份 .md，既重复又容易让测试者误把历史版说明当本版依据。
+    removed = strip_delivery_docs(output)
+    if removed:
+        print("已移除交付包内文档：" + ", ".join(removed))
+    shutil.copy2(ROOT / "templates" / "smt_bom_attributes.csv", output / "smt_bom_attributes.csv")
+    shutil.copy2(ROOT / "templates" / "assembly_rules.json",output/"assembly_rules.json")
+    from src.application.version import BUILD_ID
     write_document(output / "release.json", {
         "product": "Evan MPA-DFM", "app_id": APP_ID, "license_days": args.days,
+        "build_id": BUILD_ID,
         "starts": first.isoformat(), "expires": last.isoformat(),
         "built_at": date.today().isoformat(), "files": {
             p.relative_to(output).as_posix(): checksums(p) for p in output.rglob("*") if p.is_file()}})
-    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as package:
-        for file in output.rglob("*"):
-            if file.is_file():
-                package.write(file, output.name + "/" + file.relative_to(output).as_posix())
-    print(json.dumps({"directory": str(output), "archive": str(archive),
-                      "starts": str(first), "expires": str(last), "days": args.days}, ensure_ascii=False))
+    print(json.dumps({"directory": str(output), "starts": str(first),
+                      "expires": str(last), "days": args.days}, ensure_ascii=False))
 
 
 if __name__ == "__main__":

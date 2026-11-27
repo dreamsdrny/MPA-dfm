@@ -39,7 +39,33 @@ class BridgeTests(unittest.TestCase):
         for point in ({}, {"x_mm": math.nan, "y_mm": 1}, {"x_mm": 0, "y_mm": math.inf}):
             with self.assertRaises(ValueError):
                 point_mm(point)
-        self.assertEqual(discover_editor("does-not-exist.exe"), "")
+        self.assertEqual(discover_editor("does-not-exist.exe"), discover_editor())
+
+    def test_coordinate_export_is_guarded_before_ready(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            board, editor = root / "board.brd", root / "allegro.exe"
+            board.touch()
+            editor.touch()
+            session = AllegroSession(board, editor, root / "bridge")
+            session.ack.write_text("0 READY")
+            script = session.prepare(root / "coordinates").read_text()
+            self.assertFalse(session.ack.exists())
+            self.assertLess(script.index("evan_geometry_all"), script.index("evan_dfm_connect"))
+            self.assertIn("EXPORT_FAILED", script)
+            self.assertIn("errset(progn", script)
+
+    def test_ready_export_with_error_is_not_accepted(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            board, editor = root / "board.brd", root / "allegro.exe"
+            board.touch()
+            editor.touch()
+            session = AllegroSession(board, editor)
+            session.export_dir = str(root)
+            (root / "evan_pick.log").write_text("ERROR: components export failed\nDONE:\n")
+            with self.assertRaisesRegex(ValueError, "不完整"):
+                session.validate_export()
 
     def test_padstack_actual_drill_users_units(self):
         with tempfile.TemporaryDirectory() as temporary:

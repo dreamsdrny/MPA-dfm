@@ -29,11 +29,24 @@ class WorkbenchUI(unittest.TestCase):
         self.errors = []
         self.root.report_callback_exception = lambda *args: self.errors.append(args)
         self.dialog = DFMDialog(self.root, standalone=True)
+        # These tests exercise offline geometry workers, not licensed CAD launch.
+        self.dialog.sync_editor.set(False)
+        self.dialog.smt.auto_sources.set(False)  # Existing parameter-only fixtures do not exercise native object linking.
+        # Worker/UI regression fixtures must not run native extraction on synthetic BRDs.
+        def empty_native(board, output, *args):
+            from src.brd_input import content_sha256
+            folder = Path(output) / "test-extracta"
+            folder.mkdir(parents=True, exist_ok=True)
+            return dict(status="unavailable", directory=str(folder), source_brd_sha256=content_sha256(board),
+                        components=[], updates={}, warnings=[], stackup=[])
+        self.native = patch("src.application.brd_extraction.prepare_brd_data", side_effect=empty_native)
+        self.native.start()
 
     def tearDown(self):
         if hasattr(self, "dialog"):
             self.dialog._close()
             self.prefs.stop()
+            self.native.stop()
 
     def wait(self, condition, timeout=3):
         deadline = time.monotonic() + timeout
@@ -322,12 +335,14 @@ class WorkbenchUI(unittest.TestCase):
         self.assertEqual(self.dialog.smt.last_result["items"][0]["status"], "fail")
         self.dialog.params.entries["min_component_spacing"].set("0.6")
         self.assertIsNone(self.dialog.smt.last_result)
-        self.assertEqual(set(self.dialog.report_buttons), {"dfm", "pcb", "smt"})
+        self.assertEqual(set(self.dialog.report_buttons), {"pcb"})
+        self.assertEqual(self.dialog.analysis_export_button.cget("text"),"导出分析报告…")
 
     def test_export_uses_frozen_snapshot_in_worker(self):
         self.import_board()
         self.profile()
         self.dialog._run()
+        self.wait(lambda: not self.dialog.tasks.pending)
         self.dialog.smt.run()
         self.wait(lambda: not self.dialog.tasks.pending)
         self.assertIsNotNone(self.dialog.last_result)
@@ -340,7 +355,7 @@ class WorkbenchUI(unittest.TestCase):
                              smt is not None, threading.get_ident()))
             return [path]
 
-        with patch("src.ui.dfm_dialog.filedialog.asksaveasfilename", return_value="report.xlsx"), \
+        with patch("src.ui.report_dialog.choose_report", return_value=("dfm","report.xlsx")), \
                 patch("src.ui.dfm_dialog.export_report", side_effect=slow_export), \
                 patch("src.ui.dfm_dialog.messagebox.showinfo"):
             self.dialog._export("dfm")
@@ -358,11 +373,11 @@ class WorkbenchUI(unittest.TestCase):
         self.dialog.output_pcb_report.set(True)
         brd = Path(self.dialog.brd_path.get())
         for kind, label in (("pcb", "PCB报告"), ("dfm", "DFM综合报告"), ("smt", "SMT报告")):
-            with patch("src.ui.dfm_dialog.filedialog.asksaveasfilename", return_value="") as save:
+            with patch("src.ui.report_dialog.choose_report", return_value=None) as save:
                 self.dialog._export(kind)
-            kwargs = save.call_args.kwargs
-            self.assertEqual(kwargs["initialfile"], f"{brd.stem}_{label}.xlsx")
-            self.assertEqual(kwargs["initialdir"], str(brd.parent))
+            from src.adapters.workbench_report import default_report_name
+            self.assertEqual(default_report_name(str(brd),kind),(f"{brd.stem}_{label}.xlsx",str(brd.parent)))
+            self.assertEqual(save.call_args.args[1],[kind])
         self.assertFalse(self.dialog.tasks.pending)  # 取消保存不应启动导出
 
     def test_toplevel_callback_error_does_not_stop_task_polling(self):
@@ -397,7 +412,7 @@ class WorkbenchUI(unittest.TestCase):
         chosen = []
         self.dialog.results._on_open_point = chosen.append
         index = result["items"].index(item)
-        self.dialog.tree.selection_set(self.dialog.tree.get_children()[index])
+        self.dialog.tree.selection_set(str(index))
         self.dialog.results._locate_capability()
         self.assertEqual(chosen, [point])
         self.assertEqual(self.dialog.results.nb.index("current"), 1)
@@ -451,13 +466,13 @@ class WorkbenchUI(unittest.TestCase):
         with patch("src.ui.prefs.save_prefs"):
             self.dialog.language.set("English")
             self.dialog._apply_language()
-            self.assertEqual(self.dialog.run_button.cget("text"), "Run PCB analysis")
+            self.assertEqual(self.dialog.run_button.cget("text"), "Analyze all · PCB + SMT")
             self.dialog.color_mode.set("Dark")
             self.dialog._apply_color_mode()
             self.assertEqual(COLORS["bg"], "#111827")
             self.dialog.language.set("中文")
             self.dialog._apply_language()
-            self.assertEqual(self.dialog.run_button.cget("text"), "执行 PCB 分析")
+            self.assertEqual(self.dialog.run_button.cget("text"), "整体分析 · PCB + SMT")
             self.dialog.color_mode.set("Light")
             self.dialog._apply_color_mode()
 

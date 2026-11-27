@@ -128,14 +128,14 @@ def test_smt_evidence_changes_during_analysis_are_rejected(tmp_path):
             "unit": "mm", "coordinate_alignment_confirmed": True, "complete": {}}
     evidence.write_text(json.dumps(data), encoding="utf-8")
     profile = {"meta": {"factory": "Fixture"}, "profiles": {"default": {"rules": []}}}
-    def mutate(*_args):
+    def mutate(*_args, **_kwargs):
         stat = evidence.stat()
         old = evidence.read_text(encoding="utf-8")
         evidence.write_text(old.replace('"mm"', '"cm"'), encoding="utf-8")
         os.utime(evidence, ns=(stat.st_atime_ns, stat.st_mtime_ns))
         return {}, []
     stub_result = {"items": [], "meta": {"factory": "Fixture"}, "manual_requirements": []}
-    with patch("src.services.smt_analysis.analyze_objects", side_effect=mutate), \
+    with patch("src.domain.smt_objects.analyze_objects", side_effect=mutate), \
             patch("src.services.smt_analysis.apply_object_results"), \
             patch("src.services.smt_analysis.summarize_smt"), \
             pytest.raises(ValueError, match="内容在分析期间发生变化"):
@@ -163,8 +163,11 @@ def test_report_race_does_not_overwrite_competing_file(tmp_path):
     main, sidecar = tmp_path / "report.xlsx", tmp_path / "report.txt"
     real_copy = shutil.copyfileobj
     def competing_creation(src, dst, **kwargs):
-        real_copy(src, dst, **kwargs)
+        # Simulate an exclusive-publication race before acquiring the target.
+        dst.close()
+        main.unlink()
         main.write_bytes(b"created by another process")
+        raise FileExistsError("competing creation")
     with patch("src.workbench_report._copy_report_bytes", side_effect=competing_creation), pytest.raises(FileExistsError):
         export_report("pcb", main, pcb=pcb)
     assert main.read_bytes() == b"created by another process"
@@ -218,5 +221,5 @@ def test_smt_report_never_overwrites_evidence(tmp_path):
     smt = {"items": [], "object_evidence_path": str(evidence), "evidence_fingerprints": content,
            "profile_sources": []}
     with pytest.raises(ValueError, match="不能覆盖源"):
-        export_report("smt", tmp_path / "evidence.xlsx", smt=smt)
+        export_report("smt", tmp_path / "evidence.json", smt=smt)
     assert json.loads(evidence.read_text())["brd_sha256"] == sha256_file(board)

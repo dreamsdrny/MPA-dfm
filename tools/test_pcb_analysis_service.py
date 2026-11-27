@@ -14,7 +14,7 @@ def request_for(tmp_path, **options):
     board = tmp_path / "board.brd"
     board.write_bytes(b"source-board")
     design = {"copper_um": 35, "_brd_signature": brd_signature(str(board)), "nested": {"value": 1}}
-    return PCBAnalysisRequest(str(board), design, **options)
+    return PCBAnalysisRequest(str(board), design, extract_native=False, **options)
 
 
 def result():
@@ -80,6 +80,49 @@ def test_external_geometry_failure_never_runs_parameter_only(tmp_path):
         with pytest.raises(ValueError, match="缺制造资料"):
             run_pcb_analysis(request)
         parameter.assert_not_called()
+
+
+@pytest.mark.parametrize("native", [True, False])
+def test_imported_stackup_change_before_analysis_is_rejected(tmp_path, native):
+    from src.infrastructure.snapshots import capture_sources
+    stack = tmp_path / "stackup.json"
+    stack.write_text("old")
+    request = request_for(tmp_path, auto_manufacturing=native,
+                          stackup_sources=tuple(capture_sources([stack])))
+    stack.write_text("new")
+    with patch("src.manufacturing_pipeline.analyze_brd_manufacturing") as engine, \
+            pytest.raises(ValueError, match="内容已变化"):
+        run_pcb_analysis(request)
+    engine.assert_not_called()
+
+
+@pytest.mark.parametrize("native", [True, False])
+def test_stackup_changes_during_analysis_discard_result(tmp_path, native):
+    from src.infrastructure.snapshots import capture_sources
+    stack = tmp_path / "stackup.json"
+    stack.write_text("old")
+    request = request_for(tmp_path, auto_manufacturing=native,
+                          stackup_sources=tuple(capture_sources([stack])))
+    def compute(*args, **kwargs):
+        stack.write_text("new")
+        return result()
+    target = "src.manufacturing_pipeline.analyze_brd_manufacturing" if native else "src.services.pcb_analysis._analyze_external"
+    with patch(target, side_effect=compute), pytest.raises(ValueError, match="内容已变化"):
+        run_pcb_analysis(request)
+
+
+def test_stackup_snapshot_is_retained_for_report_version_check(tmp_path):
+    from src.infrastructure.snapshots import capture_sources
+    from src.services.pcb_analysis import verify_analysis_sources
+    stack = tmp_path / "stackup.json"
+    stack.write_text("old")
+    request = request_for(tmp_path, stackup_sources=tuple(capture_sources([stack])))
+    with patch("src.manufacturing_pipeline.analyze_brd_manufacturing", return_value=result()):
+        analyzed = run_pcb_analysis(request)
+    assert request.stackup_sources[0] in analyzed["input_fingerprints"]
+    stack.write_text("new")
+    with pytest.raises(ValueError, match="资料已变化"):
+        verify_analysis_sources(analyzed)
 
 
 @pytest.mark.parametrize("source", ["geometry_json", "local_manifest"])
