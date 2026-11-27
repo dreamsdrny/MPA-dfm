@@ -1,16 +1,14 @@
-# 开始使用
+# Allegro 走线查找快速开始
 
-1. 将完整 ZIP 解压到有写权限的目录，双击 `Evan_MPA_DFM.exe`。不要只拷贝 EXE，必须保留 `license.json`。
-2. 在有许可的 Allegro PCB Editor 打开目标 `.brd`；Free Viewer 不支持本插件的完整功能。
-3. 双击包内 `IMP_HIGHLIGHT/prepare_load.cmd`。它会按当前解压位置修复 `load_imp.scr`。
-4. Allegro：**File → Script → load_imp.scr**，打开 `IMP_HIGHLIGHT` 原生面板。
-5. 选目标层（例如 `L5_SIG`），线宽填 `5`、间距留空即可只筛选 5 mil；填写间距则同时筛选线宽与间距。
-6. 识别模式选 Geometry（纯几何）、Impedance（阻抗约束网络）或 Pair（真实数据库差分对）；颜色选 Allegro 实际调色板色块。
-7. 点击 Highlight，保持原生面板打开查看；Pick Segment 查看属性，Close 清除显示。不自动保存 BRD。
+1. 启动 MPA-DFM，导入目标 `.brd`，等待读取完成。
+2. 进入 **Allegro 走线查找 / 高亮**，选择铜层。
+3. 填写线宽 / 线距，单位为 mil，留空表示不限。例如线宽 `5`、线距留空，只查 5 mil 走线。
+4. 点击 **在 PCB Editor 查找并高亮**。程序自动启动 PCB Editor，只读打开当前 BRD 并执行原生命令。首次使用可按提示设置 `allegro.exe` 或 `orcadpcb.exe`。
+5. 完成 Cadence 产品/许可选择。只有原生执行回执 `HIGHLIGHTED` 才表示高亮成功；启动进程、生成脚本不算成功。
+6. 保持 Allegro 结果面板打开查看临时高亮；Clear/Close 恢复显示。重新查找前关闭该查找打开的 Editor，不会替你关闭其他 CAD 窗口。
 
-主程序顶部“阻抗 / 走线原生高亮”进入集成页签，可以准备插件、导入板目录、生成当前参数的执行脚本、读取原生结果。
-执行脚本仍需在同一 PCB Editor 中通过 File → Script 运行，不是自动控制其他程序窗口。
+页面已删除插件目录、识别模式、Net、差分对、阻抗目标、容差、颜色、约束表及手动脚本交接按钮。
+此功能只做实际几何筛选，不是阻抗计算。间距不包含铜皮、焊盘或过孔。
 
-**验证边界：**EXE 启动、授权、插件打包资源及控制逻辑已测试；本机真实 Allegro 探测未成功，因此真实板的 Constraint Manager / 高亮 / 拾取仍需现场验收。
-若命令失败，请回传 PCB Editor 命令日志及版本，不要把 READ_ERROR、0 命中或未完成视为全板通过。
-完整算法边界见 `PCB_TRACE_FILTER.md`。
+**验证边界：**自动测试覆盖界面、直接启动参数、输入校验和 SKILL 语言/几何合同；模拟 API 测试不等于真实高亮验收。
+本机 Cadence 17.4 原生探测返回退出码 2，没有回执，源 BRD 哈希不变。实际高亮及选点缩放仍须有许可的 PCB Editor 验收。

@@ -267,7 +267,7 @@ SMT 能力通过界面导入 YAML，或在源码中调用 `src.smt_engine.load_s
 2. 生成 `config/license_policy.json` 与签名的 `config/integrity_manifest.json`；
 3. 调用 PyInstaller 构建 `Evan_MPA_DFM.exe`；
 4. 签发绑定 EXE SHA-256 的 `license.json`（60 天 = `starts + 59`，到期当天仍有效）；
-5. 生成 `release.json`、插件目录和同名 ZIP。
+5. 生成 `release.json` 和插件目录；不再生成同名 ZIP，交付区只保留一个版本文件夹。
 
 私钥目录**不能**位于交付目录内，也不能提交到仓库。丢失私钥将无法为同一 EXE 续期。
 

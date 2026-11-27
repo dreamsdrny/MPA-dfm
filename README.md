@@ -23,12 +23,19 @@
 | 参数与叠构校验 | 线宽 / 线距 / 孔环 / 阻焊桥等参数按成品铜厚和内层叠构分档检查，未确认项不判通过 |
 | 实际几何 / 对象检查 | Gerber、NC Drill、ODB++ 的铜层几何与对象检查，记录测量值、来源、覆盖缺口 |
 | SMT 能力分析 | 设计值与产线过程值分离，支持供应商能力 YAML、内部基线对比和已确认对象轮廓检查 |
+| PCB → SMT 自动资料链 | 关联后台引脚/焊盘/过孔/走线、占位轮廓和 BOM/Gerber；精确位号、DNP、冲突与分面完整性检查 |
 | 制造资料协同 | Gerber / ODB++ 与 BOM / Placement 双向核对，保留双方原记录和版本差异 |
 | 报告输出 | XLSX / CSV / TXT / JSON，包含结论、逐项能力、问题坐标、器件坐标、来源和覆盖状态 |
-| Allegro 联动 | 生成坐标定位脚本与走线筛选插件（`skill/imp_highlight.il`），通过原生 SKILL 与 PCB Editor 交互 |
+| Allegro 联动 | PCB 分析后台 extracta 提取坐标和逐层铜厚，不打开 Editor；显式定位/高亮才启动只读 PCB Editor |
 | Checklist / BRD 审查 | 兼容入口提供 Checklist 自动填写、八大类 BRD 审查与资料库（`store-brd` / `store-bom`）配对 |
 
 分析结论遵循 `fail > review > pass`：缺数据、未确认工艺、部分几何覆盖都不自动放行。`geometry_complete=False` 表示当前几何算法尚未覆盖全板，不能把“任务完成”当成制造通过。
+
+R7 统一检查状态、逐层成品铜厚确认、PCB/Gerber/BOM → SMT 操作及补充列见 [docs/PCB_SMT_R7.md](docs/PCB_SMT_R7.md)。
+
+R9 针对894外部DFM报告的补充装配检查、明确工艺规则和剩余资料缺口见 [docs/DFM_REPORT_REVIEW_R9.md](docs/DFM_REPORT_REVIEW_R9.md)。
+
+R10 根据302报告补充PTH焊接面间距、螺丝孔净空、后跟余量、热连接候选、支撑肋与软硬结合板分板资料合同，见 [docs/DFM_302_LESSONS_R10.md](docs/DFM_302_LESSONS_R10.md)。
 
 ## 目录结构
 
@@ -111,12 +118,17 @@ TEST 授权只能用于本机开发，不能用于正式交付。详细步骤、
   --admin "$env:LOCALAPPDATA\EvanMPADFMReleaseAdmin\20261125" --days 60
 ```
 
-- 构建会生成签名的 `config/integrity_manifest.json`、绑定 EXE SHA-256 的 `license.json`、`release.json` 和同名 ZIP。
+- 构建会生成签名的 `config/integrity_manifest.json`、绑定 EXE SHA-256 的 `license.json` 和 `release.json`；不再生成同名 ZIP，交付区只保留一个版本文件夹。
 - 私钥由 Windows DPAPI 保护，保存在管理员目录，**不进入仓库和交付包**。
 - 续期使用 `tools/renew_release_license.py`，发布验收使用 `tools/verify_release.py`。
 - 修改配置后必须重新构建并重新签发，不能只替换交付目录里的文件。
 
 ## 已知边界
+
+SMT新增能力及交付说明：[多报告增量 R11](docs/SMT_MULTI_REPORT_R11.md)。新增16类装配检查，共40类补充检查，包含R10机械检查；所有历史报告阈值需当前工艺确认，缺资料不自动放行。
+最新：[BOM主副料、同器件SMD脚/阻焊与报告增量 R12](docs/SMT_BOM_PIN_MASK_R12.md)，47类补充检查，保留全部历史能力与资料完整性限制。
+源码增量：[BRD / ODB++ / STP协同 R13](docs/SMT_ODB_STEP_R13.md)。BRD仍为主，ODB严格核对后采用制造层；STP无CAD内核不自动生成实体。R13已打包交付，交付包不再带 .md 文档。
+最新：[统一工作台 · TXD采集表 · 叠构剖面 R14](docs/WORKBENCH_TXD_STACKUP_R14.md)。顶部改为「整体分析 · PCB + SMT」与「导出分析报告…」（选内容与一种格式，不再自动附 .txt/.json）；SMT 页改为供应商/产线选择并完整入库同兴达采集表；叠构新增比例剖面图与报告图片。
 
 - 当前不提供完整的全网表跨层开短路证明、完整最小线宽骨架、全部焊盘栈 / 公差 / 装配可达性检查。
 - 未确认的孔工艺、制造资料对齐、供应商门槛或缺数据项一律阻止自动放行。

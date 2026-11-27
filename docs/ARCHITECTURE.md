@@ -130,7 +130,7 @@ Tk、PyInstaller依赖开发环境；EXE用户无需Python。Gerbonara数据文�
   --admin "C:\Users\SZV01201\AppData\Local\EvanMPADFMReleaseAdmin\20261123" --days 60
 ```
 
-管理工具生成独立发行者、公钥策略、签名清单，保留原 `config/license_policy.json` 的正式初始化状态，不覆盖正式私钥。私钥只在独立管理目录以Windows DPAPI保护，本Windows账户才能解密；**不进入交付ZIP/EXE**。需受控备份管理员目录与Windows账户恢复能力，丢失该私钥无法为这个EXE续签；不能仅导出公钥恢复签发能力。
+管理工具生成独立发行者、公钥策略、签名清单，保留原 `config/license_policy.json` 的正式初始化状态，不覆盖正式私钥。私钥只在独立管理目录以Windows DPAPI保护，本Windows账户才能解密；**不进入交付目录/EXE**。需受控备份管理员目录与Windows账户恢复能力，丢失该私钥无法为这个EXE续签；不能仅导出公钥恢复签发能力。
 
 交付程序ID为 `Evan.MPA_DFM`，文件名/GUI为普通产品名，许可证绑定最终EXE的SHA-256。60日计算为 `expires=starts+59天`，到期当天有效，次日拒绝。管理员续期：
 
@@ -183,7 +183,7 @@ Tk、PyInstaller依赖开发环境；EXE用户无需Python。Gerbonara数据文�
 | `config/` | 内部设计基线和板厂能力分开；发行公钥/配置由发布脚本签名 | 走线筛选未增加规则配置，不把规则当成实测 |
 | `docs/` | 设计合同、用户使用和验收边界 | 本文、`ACCEPTANCE_TESTS.md`、`PCB_TRACE_FILTER.md`；用户入口在 `TUTORIAL.md` |
 | `output/` | 报告、构建验证和临时生成物，不作为源码或发布私钥位置 | 示例工具包 `output/trace_filter_skill/`（本机生成，可重新生成） |
-| `delivery/<独立版本>/` | 不覆盖旧交付；EXE、匹配 license、文档、发布清单及同名 ZIP | 由 `tools/build_release.py` 构建 |
+| `delivery/<独立版本>/` | 不覆盖旧交付；EXE、匹配 license、文档、发布清单；交付区只保留一个版本文件夹（不生成 ZIP） | 由 `tools/build_release.py` 构建 |
 | `%LOCALAPPDATA%/...ReleaseAdmin/` | DPAPI 保护签发私钥，独立于交付包 | 构建过程、私钥；不要复制至交付目录 |
 | `store-brd/` / `store-bom/` / 外层 `存档/` | 用户/客户资料与历史存档 | 只读输入，不纳入发行包、不自动清理 |
 

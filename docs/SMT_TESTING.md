@@ -1,5 +1,9 @@
 # SMT 立景能力对比与检测（2026-11-24）
 
+2026-11-27 更新：支持自动关联 PCB 导出对象、Gerber 与 BOM；操作/补充列/完整性边界见 `PCB_SMT_R7.md`。下文手工对象 JSON 入口仍保留。
+
+R8：SMT 页“导入 BOM 表”后台验证后参与全部模式的 BOM/CAD 核对，报告 Issue summary 支持嵌入真实资料问题局部图。说明见 `SMT_BOM_ISSUE_PICTURES_R8.md`。
+
 ## 测试入口
 
 1. 解压整个交付包，保持 `Evan_MPA_DFM.exe` 和 `license.json` 同目录。

@@ -3,13 +3,15 @@
 更新：2026-11-25。主程序为 **Evan_MPA_DFM.exe**，默认打开 **PCB 分析 · BRD / Gerber** 统一界面。
 **新版入口：** 导入 BRD / Gerber 文件、压缩包或整套目录 → 确认共用能力与叠构 → 执行 PCB 分析 → 预览问题/导出报告。
 Gerber 无需先导入 BRD；BRD 与 Gerber 共用资料区、参数区、结果区。完整说明见 [GERBER_STANDALONE.md](docs/GERBER_STANDALONE.md)。
-新版右上角构建标识为 `20261125-PCB-Unified-ArcFix`；旧 EXE 不会自动读取更新后的源码。
+新版右上角构建标识为 `20261125-PCB-Compact-R4`；旧 EXE 不会自动读取更新后的源码。
+主工具栏仅保留导入文件、导入目录、执行 PCB 分析、导出 PCB 报告、图形预览；其他操作在“设置 / 工具”。
+结果与位置每页最多 100 项，仅分页显示，不删分析数据。默认筛选不符合/待复核，通过与缺数据可以单独查看。
 SMT 立景能力自动加载、内部基线对比、对象检测与验收说明见 [SMT_TESTING.md](docs/SMT_TESTING.md)。
 源码与架构见 [ARCHITECTURE.md](docs/ARCHITECTURE.md)，验证与构建见 [ACCEPTANCE_TESTS.md](docs/ACCEPTANCE_TESTS.md)。交付包中这两份文件与本教程放在同一目录。
 
 ## 1. 安装、启动与授权
 
-Windows 10/11 x64：解压交付 ZIP 到有写权限的普通目录，保持以下文件在一起：
+Windows 10/11 x64：把交付文件夹放到有写权限的普通目录（不再提供 ZIP），保持以下文件在一起：
 
 ```text
 Evan_MPA_DFM.exe
@@ -159,7 +161,7 @@ release.json
 
 ### 坐标导出
 
-“打开 BRD”在专用 Allegro 窗口建立连接并提取对象。自动发现失败时用“设置 PCB Editor”。输出一般为 `<BRD目录>/定位清单/allegro_bridge`。也可点“生成 Allegro 坐标脚本”，在同版 Editor 中执行：
+“执行 PCB 分析”后台调用 Cadence `extracta.exe` 提取器件原点、旋转、面别及逐铜层叠构，不打开 PCB Editor 图形窗口。提取数据自动填入“BRD 器件 X/Y”和“设计信息（只读）”；缺失字段显示未获取，不使用默认铜厚。每次使用独立输出目录并核对 BRD 哈希。只有显式点击 Allegro 定位/高亮/打开 BRD 才打开 Editor。坐标仍可通过下列旧 SKILL 导出方式手动补充：
 
 ```text
 skill load("D:/PCB/exports/evan_pick.il")
@@ -167,6 +169,10 @@ skill evan_pick_all("D:/PCB/exports")
 ```
 
 完整脚本 `evan_coordinates.scr` 还导出丝印/板框；可通过 Allegro File > Script 执行。核对日志及导出数量，产品/许可选择未结束时会等待。
+
+左侧拆成“分析条件 / 设计信息（只读） / 待补充资料”：条件页只选板厂、板型、能力等级；自动读取数据只读，设计规则标为非实测；缺失资料可补充或导入叠构 JSON。人工确认资料不会被后台读取覆盖。
+
+铜厚优先使用 BRD `LAYER_THICKNESS` 的明确数值与单位，逐层显示，阻焊桥分别按顶/底层铜厚向上选能力档位。设计叠构不等于板厂实测成品铜厚，制造放行需核对。原料 oz、图纸文字或层名不能替代真实叠构字段；缺铜厚时不默认 35 μm。
 
 | 导出文件 | 数据用途 |
 |---|---|
@@ -189,9 +195,9 @@ x -100.500000 200.250000
 
 ### PCB 走线线宽/线距筛选
 
-主窗口点击 **阻抗 / 走线原生高亮**，进入集成页签生成 `IMP_HIGHLIGHT` 插件。在有许可的 Allegro PCB Editor 打开真实 BRD，通过 File > Script 加载 `load_imp.scr`。原生面板读取当前铜层、Net、真实 Differential Pair 和 Electrical/Physical 约束；选目标层（如 `L5_SIG`），输入实际线宽或线宽+间距，选择当前 Allegro 调色板色块后执行。可只做几何筛选，也可先按阻抗约束网络/数据库差分对识别，不能仅凭线宽判阻抗线。
+导入 BRD 后，进入 **Allegro 走线查找 / 高亮**。页面只保留铜层、线宽 mil、线距 mil 三项；点击“在 PCB Editor 查找并高亮”会直接打开只读 BRD 并运行原生几何查找，不再生成/导入插件目录或手工加载脚本。线宽或线距留空表示不限，同时填写则按 AND 筛选，匹配容差固定为 0.01 mil。
 
-只分析所选 ETCH 层；差分间距测量真实对内另一腿，不含铜皮、焊盘或过孔，不代替 DRC/阻抗场求解。使用临时线段高亮，保持原生命令面板打开，Close 清除显示，不自动保存。主程序通过导出的当前板目录选择层/颜色，可生成同一 Editor 的执行脚本再读回结果，不是假装即刻远程控制。真实 CAD 许可/版本和显示仍须现场验收。详细操作见 `PCB_TRACE_FILTER.md`。
+只分析所选 ETCH 层，线距测量该段到其他网络走线段的最小铜边距离，不含铜皮、焊盘或过孔。使用临时高亮，保持 Allegro 结果面板打开；Clear/Close 清除显示，不保存 BRD。重新查找前关闭上次由本功能打开的 PCB Editor；不接管用户其他 CAD 窗口。此功能不是阻抗认证，真实 CAD 许可/显示仍须现场验收。详细操作见 `docs/PCB_TRACE_FILTER.md`。
 
 丝印文字/圆弧外框和最近器件关联属于候选，不是实际字形/归属证明。机械孔环定位只使用已确认通孔结构、机械工艺及实际尺寸；无可靠资料不编造314个违规孔。
 
